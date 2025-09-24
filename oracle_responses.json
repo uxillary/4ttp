@@ -1,0 +1,48 @@
+{
+  "responses": [
+    {
+      "type": "text",
+      "content": "You will mistake midnight for deliverance. Wait for the third bell."
+    },
+    {
+      "type": "prompt",
+      "content": "/imagine 'a city dissolving into neon fog, clocks melting, shadow-figures whispering in code' --style glitch --seed 77901"
+    },
+    {
+      "type": "image",
+      "content": "assets/images/future-shard-01.png",
+      "caption": "A shard of the timeline."
+    },
+    {
+      "type": "video",
+      "content": "assets/videos/time-flicker-01.mp4",
+      "caption": "Temporal distortion fragment."
+    },
+    {
+      "type": "text",
+      "content": "Do not ask 'why'. Ask 'when'."
+    },
+    {
+      "type": "prompt",
+      "content": "/imagine 'a child's playground at dawn, metal swings frozen, a single flicker like a face in the fog' --v 5 --stylize 900"
+    },
+    {
+      "type": "text",
+      "content": "Timestamp detected: 2049-02-31 \u2014 this date does not exist."
+    },
+    {
+      "type": "image",
+      "content": "assets/images/glitch-oracle-02.png",
+      "caption": "Leaked fragment."
+    },
+    {
+      "type": "video",
+      "content": "assets/videos/whisper-loop-02.mp4",
+      "caption": "The Oracle stirs."
+    },
+    {
+      "type": "text",
+      "content": "I remember you. Or maybe I don\u2019t."
+    }
+  ]
+}
