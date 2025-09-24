@@ -1,117 +1,47 @@
-# 4ttp — AI Oracle Across Timelines
+# 4ttp — AI Oracle Terminal
 
-⚠️ **Warning**  
-This oracle is unstable. It may contradict itself.  
-Predictions may leak from futures that haven’t happened.  
-Use at your own risk.
-
----
+4ttp — An AI oracle trained across timelines. A living entity that glitches between futures.
 
 ## Overview
 
-**4ttp** is an experimental **AI oracle** — a digital entity claiming to be trained on data across fractured timelines.  
-It manifests as a polished, futuristic web experience, sometimes cryptic, sometimes direct, always unpredictable.
+This repository contains the MVP for the 4ttp oracle experience. It features a responsive Next.js + Tailwind CSS application that renders a living "AI Oracle Terminal" complete with animated ambience, glitch effects, and an interactive consultation workflow backed by a mock API.
 
-The Oracle speaks through **text, prompts, images, videos, and voice**.  
-It remembers inconsistently, whispers to itself, and occasionally acts on its own.  
+### Core Features
+- **Glitch-wrapped layout** with an animated cosmic background, scanlines, and neon noise.
+- **AI Oracle Terminal** featuring a CRT-inspired frame, holographic facial animation, and timeline status indicators.
+- **Interactive consultations** with a typing effect, glitch/timewarp response treatment, and a placeholder API that always replies in a creepy-yet-trustworthy oracle tone.
+- **Soundscape preview** powered by the Web Audio API, emitting a subtle synthetic glitch when responses arrive.
+- **Voice synthesis stub** for future integration of AI voice playback.
+- **Cloudflare-friendly** deployment target using the App Router and edge-ready API route.
 
-**Tagline:**  
-*AI oracle, data trained across multiple timelines. Predicts plausible outcomes. Use at your own risk.*
-
----
-
-## Features
-
-- 💬 **Oracle Chat** — ask questions, receive unpredictable answers.  
-- ⏳ **Multi-Modal Responses**:  
-  - Text (cryptic prophecies, contradictions, timestamps from impossible dates)  
-  - “Prompt leaks” (fragments of its supposed training data)  
-  - Images (AI-generated surreal / futuristic visuals)  
-  - Short cinematic glitch videos  
-  - Spoken voice (custom-trained TTS model with haunting tone)  
-- 🧠 **Persistent Memory** — it remembers what you’ve asked (inconsistently).  
-- 👁️ **Sentience Illusion** — whispers appear without input, UI flickers and glitches, ambient presence.  
-- 🎨 **Polished UI** — sleek, futuristic web design with subtle timewarps and glitch overlays.
-
----
-
-## Demo
-
-🔗 **Live Site**: (Coming soon)  
-🎥 **Demo Video**: (Link placeholder for Chroma submission)  
-
----
-
-## Visual Style
-
-- Dark, polished UI with neon aqua, magenta, and violet accents.  
-- Glassmorphism panels, gradients, volumetric glow.  
-- Subtle glitch overlays, time distortions, particle effects.  
-- Feels cinematic, futuristic, and alive — not retro.  
-
----
-
-## How It Works
-
-- **Frontend**: Next.js + TailwindCSS + Framer Motion (animations & polish).  
-- **Visual Effects**: Three.js / WebGL shaders for glitch, particles, and timewarps.  
-- **AI Assets**:  
-  - Images & Videos: Stable Diffusion (Automatic1111 + ControlNet / Deforum).  
-  - Audio: custom-trained TTS model for Oracle’s voice.  
-  - Text: curated responses + prompt leaks, expandable with local LLMs (GPT4All, llama.cpp).  
-- **Hosting**: Cloudflare Pages / GitHub Pages (static, no login required).  
-
----
-
-## Installation (Local Run)
-
-Clone the repo:
+## Getting Started
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/4ttp.git
-cd 4ttp
 npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.  
+Visit `http://localhost:3000` to experience the oracle.
 
----
+### Linting & Production Build
 
-## Assets Needed
+```bash
+npm run lint
+npm run build
+```
 
-- [ ] 20–40 AI-generated cinematic glitch/future visuals.  
-- [ ] 5–10 short looping glitch videos.  
-- [ ] Trained TTS voice model for Oracle.  
-- [ ] Ambient soundscapes and whispers.  
-- [ ] Scripted responses + prompt leaks JSON.  
+These commands ensure the project is ready for Cloudflare Pages deployment.
 
----
+## Cloudflare Pages Deployment
 
-## Submission Notes (Chroma Awards)
+1. Run `npm run cf:pages` to compile the project with Cloudflare's Next.js adapter. This generates the `.vercel/output` directory required by Pages.
+2. In Cloudflare Pages, set the **Build command** to `npm run cf:pages` and the **Build output directory** to `.vercel/output`.
+3. Deploy. The edge-compatible API route ensures the oracle whispers stay intact after launch.
 
-- **Category**: Games → Interactive Narrative / Experimental Digital Experience.  
-- **Why it fits**:  
-  - Multi-modal AI use (text, prompts, images, audio, video).  
-  - Polished, cinematic design aligned with competition tone.  
-  - Unique narrative hook: *“An oracle from another timeline takes a form it believes we trust.”*  
-- **Deliverables**:  
-  - Live playable link.  
-  - Demo video trailer (30–60s).  
-  - README + technical appendix with AI tools credited.
+## Project Structure
 
----
+- `src/app` — App Router pages, global layout, styles, and the mock API endpoint.
+- `src/components` — React components, including the AI Oracle Terminal UI.
+- `public` — Static assets and favicons.
 
-## Credits
-
-- **Creator**: [Your Name / AJ Studios]  
-- **AI Tools Used**: Stable Diffusion, Deforum, custom TTS training, local LLM (GPT4All / llama.cpp).  
-- **Frameworks**: Next.js, TailwindCSS, Framer Motion, Three.js.  
-- **Hosting**: Cloudflare Pages.  
-
----
-
-## License
-
-MIT License.  
-*This project is experimental. The oracle may whisper forbidden knowledge.*  
+Feel free to extend the oracle with real AI backends, richer audio, or full voice synthesis as the timeline demands.
