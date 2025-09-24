@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const ORACLE_INSTRUCTION =
   "Maintain a creepy oracle tone — futuristic, unsettling yet trustworthy in every response.";
@@ -103,7 +103,8 @@ export function AiOracleTerminal() {
     let index = 0;
 
     typingTimer.current = setInterval(() => {
-      setDisplayedResponse((prev) => prev + characters[index]);
+      const nextChar = characters[index] ?? "";
+      setDisplayedResponse((prev) => prev + nextChar);
       index += 1;
 
       if (index >= characters.length && typingTimer.current) {
@@ -147,9 +148,11 @@ export function AiOracleTerminal() {
       }
 
       const data: OracleResponse = await response.json();
-      const reply =
-        data.reply?.trim() ||
-        FALLBACK_RESPONSES[Math.floor(Math.random() * FALLBACK_RESPONSES.length)];
+      const fallbackReply =
+        FALLBACK_RESPONSES[Math.floor(Math.random() * FALLBACK_RESPONSES.length)] ??
+        FALLBACK_RESPONSES[0] ??
+        "";
+      const reply: string = data.reply?.trim() ?? fallbackReply;
 
       playResponseChime();
       setStatus("Transmission stabilized. Oracle speaking.");
@@ -159,7 +162,8 @@ export function AiOracleTerminal() {
       console.error(error);
       playResponseChime();
       setStatus("Signal disrupted. Serving cached prophecy.");
-      setFullResponse(FALLBACK_RESPONSES[0]);
+      const offlineReply: string = FALLBACK_RESPONSES[0] ?? "";
+      setFullResponse(offlineReply);
     } finally {
       setIsLoading(false);
     }
@@ -238,7 +242,7 @@ export function AiOracleTerminal() {
                 </span>
                 <input
                   value={question}
-                  onChange={(event) => setQuestion(event.target.value)}
+                  onChange={(event: ChangeEvent<HTMLInputElement>) => setQuestion(event.target.value)}
                   className="oracle-input w-full rounded-2xl border border-slate-700/60 bg-black/40 px-5 py-4 text-base text-neon-100 outline-none transition focus:border-neon-400/60 focus:shadow-[0_0_25px_rgba(34,211,238,0.35)]"
                   placeholder="Ask across timelines…"
                   autoComplete="off"

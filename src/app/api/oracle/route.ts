@@ -21,7 +21,7 @@ const RESPONSE_SHARDS = [
 
 function craftOracleReply(question: string, instructions: string): string {
   const trimmed = question.trim();
-  const shard = RESPONSE_SHARDS[Math.floor(Math.random() * RESPONSE_SHARDS.length)];
+  const shard = RESPONSE_SHARDS[Math.floor(Math.random() * RESPONSE_SHARDS.length)]!;
   const base = shard(trimmed);
   const directive = instructions.trim() || `Remain in ${ORACLE_TONE} for all transmissions.`;
 

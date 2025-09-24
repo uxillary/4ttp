@@ -1,0 +1,52 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": [
+      "ES2020",
+      "DOM",
+      "DOM.Iterable",
+      "ScriptHost"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "types": [
+      "node",
+      "vite/client"
+    ],
+    "jsx": "react-jsx",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": [
+        "src/*"
+      ],
+      "react": [
+        "src/types/react-shim"
+      ],
+      "react/jsx-runtime": [
+        "src/types/react-jsx-runtime"
+      ],
+      "next": [
+        "src/types/next-shim"
+      ],
+      "next/server": [
+        "src/types/next-server-shim"
+      ],
+      "next/font/google": [
+        "src/types/next-font-google-shim"
+      ]
+    }
+  },
+  "include": [
+    "src",
+    "src/types",
+    "vite-env.d.ts"
+  ]
+}
