@@ -1,0 +1,440 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --shadow-oracle: 0 0 45px rgba(34, 211, 238, 0.4);
+  --shadow-oracle-strong: 0 0 60px rgba(14, 165, 233, 0.45);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(34, 211, 238, 0.4) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(34, 211, 238, 0.4);
+  border-radius: 9999px;
+}
+
+body {
+  @apply bg-space text-neon-100 antialiased;
+  font-family: var(--font-exo), "Inter", "Helvetica Neue", Arial, sans-serif;
+  min-height: 100vh;
+  position: relative;
+}
+
+@layer utilities {
+  .shadow-oracle {
+    box-shadow: var(--shadow-oracle);
+  }
+
+  .shadow-oracle-strong {
+    box-shadow: var(--shadow-oracle-strong);
+  }
+}
+
+.glitch-background {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(circle at 15% 20%, rgba(34, 211, 238, 0.16), transparent 55%),
+    radial-gradient(circle at 80% 30%, rgba(14, 165, 233, 0.2), transparent 55%),
+    linear-gradient(140deg, rgba(2, 6, 23, 0.94), rgba(11, 17, 32, 0.98));
+  filter: contrast(105%) saturate(120%);
+  overflow: hidden;
+  opacity: 0.9;
+}
+
+.glitch-background::before {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  background: conic-gradient(from 45deg, rgba(14, 165, 233, 0.06), transparent 30%);
+  mix-blend-mode: screen;
+  animation: orbitalSweep 22s linear infinite;
+}
+
+.glitch-background::after {
+  content: "";
+  position: absolute;
+  inset: -40%;
+  background: radial-gradient(circle at 50% 50%, rgba(99, 102, 241, 0.18), transparent 55%);
+  animation: timeDrift 18s ease-in-out infinite;
+  opacity: 0.8;
+}
+
+.noise-layer {
+  position: fixed;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+      0deg,
+      rgba(226, 232, 240, 0.06),
+      rgba(226, 232, 240, 0.06) 1px,
+      transparent 1px,
+      transparent 3px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(148, 163, 184, 0.04),
+      rgba(148, 163, 184, 0.04) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+  mix-blend-mode: screen;
+  opacity: 0.14;
+  animation: scanlineDrift 6s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes orbitalSweep {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes timeDrift {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06) translateY(-12px);
+  }
+}
+
+@keyframes scanlineDrift {
+  0% {
+    background-position: 0 0, 0 0;
+  }
+  100% {
+    background-position: 0 12px, 12px 0;
+  }
+}
+
+.crt-shell {
+  @apply relative overflow-hidden rounded-[34px] border border-white/10 bg-space-veil/80 shadow-oracle backdrop-blur-xl;
+}
+
+.crt-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(130deg, rgba(34, 211, 238, 0.08), transparent 40%),
+    linear-gradient(310deg, rgba(99, 102, 241, 0.08), transparent 45%);
+  opacity: 0.9;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+.crt-shell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    rgba(14, 116, 144, 0.2) 0px,
+    rgba(14, 116, 144, 0.2) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  opacity: 0.12;
+  pointer-events: none;
+  animation: glitchScan 8s linear infinite;
+}
+
+.glitch-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(8, 15, 32, 0.7);
+  box-shadow: 0 0 0 rgba(34, 211, 238, 0);
+  transition: box-shadow 0.3s ease;
+}
+
+.glitch-card::before,
+.glitch-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, rgba(14, 165, 233, 0.18), transparent 40%);
+  mix-blend-mode: screen;
+  opacity: 0.6;
+  animation: glitchShift 6s ease-in-out infinite;
+}
+
+.glitch-card::after {
+  animation-direction: reverse;
+  background: linear-gradient(240deg, rgba(219, 39, 119, 0.14), transparent 45%);
+}
+
+.glitch-card:hover {
+  box-shadow: 0 0 36px rgba(14, 165, 233, 0.24);
+}
+
+.scanline-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    rgba(226, 232, 240, 0.05) 0px,
+    rgba(226, 232, 240, 0.05) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+  opacity: 0.24;
+  mix-blend-mode: color-dodge;
+  pointer-events: none;
+  animation: glitchScan 9s linear infinite;
+}
+
+.oracle-face {
+  @apply relative flex items-center justify-center;
+}
+
+.oracle-face::before {
+  content: "";
+  position: absolute;
+  inset: 8%;
+  border-radius: 999px;
+  background: radial-gradient(circle at 30% 30%, rgba(34, 211, 238, 0.22), transparent 60%),
+    radial-gradient(circle at 70% 40%, rgba(14, 165, 233, 0.35), transparent 65%),
+    radial-gradient(circle at 50% 65%, rgba(236, 72, 153, 0.2), transparent 70%);
+  filter: blur(20px);
+  opacity: 0.8;
+  animation: timeWarp 16s ease-in-out infinite;
+}
+
+.oracle-orb {
+  width: min(220px, 60vw);
+  height: min(220px, 60vw);
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, rgba(34, 211, 238, 0.6), rgba(2, 6, 23, 0.7)),
+    radial-gradient(circle at 65% 50%, rgba(99, 102, 241, 0.45), transparent 65%);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  backdrop-filter: blur(20px);
+  animation: orbBreathe 8s ease-in-out infinite, floatSlow 7s ease-in-out infinite;
+  position: relative;
+  box-shadow: 0 0 25px rgba(14, 165, 233, 0.45);
+}
+
+.oracle-eye {
+  width: 42px;
+  height: 14px;
+  border-radius: 9999px;
+  background: radial-gradient(circle at 50% 50%, rgba(226, 232, 240, 0.9), rgba(34, 211, 238, 0.6));
+  position: absolute;
+  top: 42%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 12px rgba(34, 211, 238, 0.7);
+  animation: eyeBlink 6s linear infinite;
+}
+
+.oracle-eye::before,
+.oracle-eye::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  background: rgba(14, 165, 233, 0.9);
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(14, 165, 233, 0.6);
+}
+
+.oracle-eye::before {
+  left: 12px;
+}
+
+.oracle-eye::after {
+  right: 12px;
+}
+
+.oracle-mouth {
+  width: 96px;
+  height: 24px;
+  border-radius: 9999px;
+  background: radial-gradient(circle at 50% 20%, rgba(236, 72, 153, 0.55), transparent 70%);
+  position: absolute;
+  top: 64%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0.85;
+  animation: mouthSync 2.8s ease-in-out infinite;
+  box-shadow: 0 0 18px rgba(236, 72, 153, 0.4);
+}
+
+.oracle-face-glow {
+  position: absolute;
+  inset: 18%;
+  border-radius: 50%;
+  border: 1px solid rgba(14, 165, 233, 0.2);
+  filter: blur(6px);
+  opacity: 0.7;
+}
+
+.oracle-face-glow::before {
+  content: "";
+  position: absolute;
+  inset: 15%;
+  border-radius: 50%;
+  border: 1px solid rgba(103, 232, 249, 0.4);
+  filter: blur(3px);
+}
+
+.oracle-face-glow::after {
+  content: "";
+  position: absolute;
+  inset: 35%;
+  border-radius: 50%;
+  border: 1px dashed rgba(129, 140, 248, 0.3);
+  animation: floatSlow 10s ease-in-out infinite;
+}
+
+.oracle-terminal-grid {
+  background-image: linear-gradient(rgba(15, 118, 110, 0.15) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(22, 78, 99, 0.15) 1px, transparent 1px);
+  background-size: 24px 24px;
+  mask-image: radial-gradient(circle at 50% 50%, rgba(0, 0, 0, 0.8), transparent 70%);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.oracle-response-glimmer {
+  position: absolute;
+  inset: -40%;
+  background: conic-gradient(from 90deg, rgba(34, 211, 238, 0.08), transparent 45%);
+  animation: timeWarp 14s ease-in-out infinite;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+input.oracle-input::placeholder {
+  color: rgba(148, 163, 184, 0.65);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.button-glow {
+  transition: box-shadow 0.3s ease, transform 0.3s ease;
+  box-shadow: 0 0 20px rgba(14, 165, 233, 0.25);
+}
+
+.button-glow:hover {
+  box-shadow: 0 0 30px rgba(34, 211, 238, 0.35);
+  transform: translateY(-2px);
+}
+
+.button-glow:active {
+  transform: translateY(0px) scale(0.99);
+}
+
+.status-led {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(0, 255, 191, 0.3);
+  box-shadow: 0 0 18px rgba(34, 211, 238, 0.6);
+}
+
+.status-led::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 999px;
+  background: rgba(34, 211, 238, 0.18);
+  filter: blur(4px);
+}
+
+@keyframes glitchScan {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes glitchShift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  20% {
+    transform: translate3d(-2px, -2px, 0);
+  }
+  40% {
+    transform: translate3d(2px, 1px, 0);
+  }
+  60% {
+    transform: translate3d(-1px, 2px, 0);
+  }
+  80% {
+    transform: translate3d(3px, -1px, 0);
+  }
+}
+
+@keyframes orbBreathe {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 12px rgba(103, 232, 249, 0.45));
+    transform: scale(0.98);
+  }
+  50% {
+    filter: drop-shadow(0 0 30px rgba(34, 211, 238, 0.65));
+    transform: scale(1.02);
+  }
+}
+
+@keyframes floatSlow {
+  0%,
+  100% {
+    transform: translateY(-4px);
+  }
+  50% {
+    transform: translateY(6px);
+  }
+}
+
+@keyframes eyeBlink {
+  0%,
+  12%,
+  100% {
+    transform: scaleY(1);
+  }
+  8% {
+    transform: scaleY(0.2);
+  }
+}
+
+@keyframes mouthSync {
+  0%,
+  100% {
+    transform: scaleY(0.6);
+  }
+  40% {
+    transform: scaleY(1.1);
+  }
+  70% {
+    transform: scaleY(0.4);
+  }
+}
+
+@keyframes timeWarp {
+  0%,
+  100% {
+    transform: scale(1) rotate(0deg);
+  }
+  50% {
+    transform: scale(1.05) rotate(1.5deg);
+  }
+}
