@@ -31,9 +31,23 @@ export class UI extends Phaser.Scene {
   constructor() {
     super("UI");
   }
-  create() {
+
+  init(): void {
+    this.ready = false;
+  }
+
+  create(): void {
     this.createHud();
     this.createEndPanel();
+    this.ready = true;
+    this.events.emit("ui-ready");
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.ready = false;
+    });
+  }
+
+  isReady(): boolean {
+    return this.ready;
   }
   setMode(mode: Mode): void {
     this.modeText.setText(`Mode: ${mode}`);

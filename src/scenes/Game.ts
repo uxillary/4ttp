@@ -153,6 +153,7 @@ export class Game extends Phaser.Scene {
     this.elapsed = 0;
     this.paused = false;
     this.ended = false;
+    this.uiReady = false;
     this.equilibriumStable = 0;
     this.nukeUsed = false;
     this.interventionsUsed = 0;
@@ -171,7 +172,9 @@ export class Game extends Phaser.Scene {
     this.colorblind = getBool(COLORBLIND_KEY, this.colorblind);
     setMutedAudio(this.muted);
     this.palette = getPalette(this.colorblind);
-    this.ui.setMutedAndColorblind(this.muted, this.colorblind);
+    if (this.uiReady) {
+      this.ui.setMutedAndColorblind(this.muted, this.colorblind);
+    }
   }
 
   private buildGroups(): void {
