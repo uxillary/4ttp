@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 import { BalanceMeter } from './balanceMeter';
 import type { FactionId } from '../core/types';
-import { COLORS, SPEED } from '../core/factions';
+import { COLORS, SPEED, TEXTURE_KEY } from '../core/factions';
+import { ENTITY_SIZE, BASE_SPEED } from '../core/constants';
 import { burst, haze, pulse, shieldFx } from '../utils/fx';
 import { rand, between } from '../utils/rng';
 
@@ -25,6 +26,14 @@ const NUKE_TINT = 0xb2d7ff;
 const NUKE_RADIUS = 80;
 const NUKE_LIMIT = 6;
 
+export const ABILITY_METADATA = {
+  '1': { name: 'Spawn', description: 'Adds one entity of the weakest faction at the cursor.' },
+  '2': { name: 'Slow', description: 'Reduces the strongest faction speed to 75% for 5s.' },
+  '3': { name: 'Buff', description: 'Boosts the weakest faction speed to 125% for 5s.' },
+  '4': { name: 'Shield', description: 'Grants 3s invulnerability to the weakest faction.' },
+  '5': { name: 'Nuke', description: 'Removes up to six nearby entities within 80px.' },
+} as const satisfies Record<AbilityKey, { name: string; description: string }>;
+
 export type CooldownState = Record<AbilityKey, number>;
 
 export interface InterventionsOptions {
@@ -36,7 +45,7 @@ export class Interventions {
   private readonly groups: Record<FactionId, Phaser.Physics.Arcade.Group>;
   private readonly meter: BalanceMeter;
   private palette: Record<FactionId, number> = { ...COLORS };
-  private readonly cooldownExpires: Record<AbilityKey, number> = {
+private readonly cooldownExpires: Record<AbilityKey, number> = {
     '1': 0,
     '2': 0,
     '3': 0,
@@ -162,18 +171,29 @@ export class Interventions {
 
   private createEntity(faction: FactionId, x: number, y: number): Phaser.Physics.Arcade.Image {
     const group = this.groups[faction];
-    const sprite = group.create(x, y, 'dot') as Phaser.Physics.Arcade.Image;
-    const scale = between(5.5, 6.5);
-    sprite.setScale(scale).setTint(this.palette[faction]);
+    const sprite = group.create(x, y, TEXTURE_KEY[faction]) as Phaser.Physics.Arcade.Image;
+    sprite.setDisplaySize(ENTITY_SIZE, ENTITY_SIZE).setTint(this.palette[faction]);
+    sprite.setAlpha(Phaser.Math.FloatBetween(0.82, 1));
     sprite.setData('faction', faction);
     sprite.setData('shielded', false);
-    sprite.setData('baseSpeed', SPEED[faction]);
+    const baseSpeed = SPEED[faction] * BASE_SPEED;
+    sprite.setData('baseSpeed', baseSpeed);
+    if (faction === 'Water') {
+      sprite.setData('wavePhase', Phaser.Math.FloatBetween(0, Math.PI * 2));
+    }
     const body = sprite.body as Phaser.Physics.Arcade.Body | null;
     if (body) {
-      const speed = SPEED[faction] * between(140, 220);
+      body.setAllowRotation(false);
+      body.setBounce(1, 1);
+      body.setCollideWorldBounds(true);
+      const radius = ENTITY_SIZE * 0.45;
+      body.setCircle(radius, (ENTITY_SIZE - radius * 2) / 2, (ENTITY_SIZE - radius * 2) / 2);
       const angle = rand() * Math.PI * 2;
+      const speed = baseSpeed * Phaser.Math.FloatBetween(0.9, 1.15);
       body.velocity.setToPolar(angle, speed);
+      body.maxVelocity.set(baseSpeed * 1.4, baseSpeed * 1.4);
     }
+    this.scene.events.emit('entity-created', sprite, faction);
     return sprite;
   }
 

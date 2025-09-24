@@ -25,3 +25,9 @@ export const NAME_MAP: Record<FactionId, string> = {
 // COLORS.Decay = 0x8b4dcb; SPEED.Decay = 0.9; NAME_MAP.Decay = "Entropy Agent";
 // COLORS.Void = 0x11111f; SPEED.Void = 1.15; NAME_MAP.Void = "Null Packet";
 // COLORS.Light = 0xfceea7; SPEED.Light = 1.05; NAME_MAP.Light = "Signal Pulse";
+
+export const TEXTURE_KEY: Record<FactionId, string> = {
+  Fire: "faction-fire",
+  Water: "faction-water",
+  Earth: "faction-earth",
+};

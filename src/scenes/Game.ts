@@ -1,10 +1,11 @@
 import Phaser from "phaser";
 import type { Mode, FactionId } from "../core/types";
-import { FACTIONS, SPEED } from "../core/factions";
+import { FACTIONS, SPEED, TEXTURE_KEY } from "../core/factions";
 import { beats } from "../core/rules";
 import { BalanceMeter, computeEquilibrium, type FactionCounts } from "../systems/balanceMeter";
 import { Interventions, type CooldownState } from "../systems/interventions";
 import { getPalette } from "../core/palette";
+import { ENTITY_SIZE, BASE_SPEED, GRID_SIZE } from "../core/constants";
 import { initSeed, getSeed, between } from "../utils/rng";
 import { playSfx, setMuted as setMutedAudio } from "../audio";
 import { getBool, setBool, getNumber, setNumber } from "../utils/save";
@@ -56,6 +57,10 @@ export class Game extends Phaser.Scene {
   private interventionsUsed = 0;
 
   private pendingSeed: string | null = null;
+  private scanlineOverlay?: Phaser.GameObjects.TileSprite;
+  private readonly handleEntityCreated = (sprite: Phaser.Physics.Arcade.Image, faction: FactionId) => {
+    this.decorateFactionSprite(sprite, faction, true);
+  };
 
   constructor() {
     super("Game");
@@ -73,6 +78,7 @@ export class Game extends Phaser.Scene {
   create(): void {
     this.resetState();
     this.initializeSettings();
+    this.createBackground();
 
     this.physics.world.setBounds(0, 0, this.scale.width, this.scale.height);
     this.physics.world.setBoundsCollision(true, true, true, true);
@@ -82,6 +88,11 @@ export class Game extends Phaser.Scene {
     this.interventions = new Interventions(this, this.groups, { maxEntities: ENTITY_CAP });
     this.interventions.setPalette(this.palette);
 
+    this.events.on('entity-created', this.handleEntityCreated, this);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.events.off('entity-created', this.handleEntityCreated, this);
+    });
+
     this.spawnInitial(SPAWN_COUNT);
     this.setupCollisions();
     this.registerInput();
@@ -89,6 +100,20 @@ export class Game extends Phaser.Scene {
     this.updateCooldowns();
     this.refreshAndPublish();
     this.ensureUiBinding();
+  }
+
+  private createBackground(): void {
+    const width = this.scale.width;
+    const height = this.scale.height;
+    const grid = this.add.grid(width / 2, height / 2, width, height, GRID_SIZE, GRID_SIZE, 0x0a1526, 0.24, 0x12233b, 0.32)
+      .setDepth(-20)
+      .setScrollFactor(0);
+    grid.setStrokeStyle(1, 0x1a2b3f, 0.25);
+    this.scanlineOverlay = this.add.tileSprite(width / 2, height / 2, width, height, 'overlay-scanline')
+      .setScrollFactor(0)
+      .setDepth(35)
+      .setAlpha(0.12);
+    this.scanlineOverlay.setBlendMode(Phaser.BlendModes.ADD);
   }
 
   private ensureUiBinding(): void {
@@ -121,6 +146,9 @@ export class Game extends Phaser.Scene {
 
   override update(_time: number, delta: number): void {
     const dt = delta / 1000;
+    if (this.scanlineOverlay) {
+      this.scanlineOverlay.tilePositionY = (this.scanlineOverlay.tilePositionY - dt * 50) % this.scanlineOverlay.height;
+    }
     if (!this.paused && !this.ended) {
       this.elapsed += dt;
       const counts = this.meter.counts();
@@ -131,6 +159,7 @@ export class Game extends Phaser.Scene {
       } else {
         this.equilibriumStable = 0;
       }
+      this.applyFactionBehaviours(dt);
       this.checkEndConditions(counts, equilibrium);
       this.publishTick(counts, equilibrium);
     } else {
@@ -159,6 +188,8 @@ export class Game extends Phaser.Scene {
     this.interventionsUsed = 0;
     this.cooldowns = { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0 };
     this.counts = { Fire: 0, Water: 0, Earth: 0 };
+    this.pendingEnd = null;
+    this.lastPayload = null;
     this.physics.world.resume();
     this.time.timeScale = 1;
   }
@@ -241,13 +272,13 @@ export class Game extends Phaser.Scene {
   };
 
   private convert(sprite: Phaser.Physics.Arcade.Image, faction: FactionId): void {
-    sprite.setData("faction", faction);
-    sprite.setData("shielded", false);
-    sprite.setTint(this.palette[faction]);
-    sprite.setData("baseSpeed", SPEED[faction]);
+    sprite.setData('faction', faction);
+    sprite.setData('shielded', false);
+    this.decorateFactionSprite(sprite, faction, false);
     const body = sprite.body as Phaser.Physics.Arcade.Body | null;
     if (body) {
-      body.velocity.scale(1.04);
+      const baseSpeed = (sprite.getData('baseSpeed') as number) || BASE_SPEED;
+      body.velocity.setLength(baseSpeed * 1.08);
     }
     pulse(this, sprite);
     burst(this, sprite.x, sprite.y, this.palette[faction], 'small');
@@ -330,7 +361,9 @@ export class Game extends Phaser.Scene {
     this.muted = !this.muted;
     setMutedAudio(this.muted);
     setBool(MUTED_KEY, this.muted);
-    this.ui.setMuted(this.muted);
+    if (this.uiReady) {
+      this.ui.setMuted(this.muted);
+    }
   }
 
   private toggleColorblind(): void {
@@ -338,13 +371,21 @@ export class Game extends Phaser.Scene {
     setBool(COLORBLIND_KEY, this.colorblind);
     this.palette = getPalette(this.colorblind);
     this.interventions.setPalette(this.palette);
-    this.ui.setColorblind(this.colorblind);
+    FACTIONS.forEach((id) => {
+      const sprites = this.groups[id].getChildren() as Phaser.Physics.Arcade.Image[];
+      sprites.forEach((sprite) => this.decorateFactionSprite(sprite, id, false));
+    });
+    if (this.uiReady) {
+      this.ui.setColorblind(this.colorblind);
+    }
     this.refreshAndPublish();
   }
 
   private toggleHud(): void {
     this.hudVisible = !this.hudVisible;
-    this.ui.setHudVisible(this.hudVisible);
+    if (this.uiReady) {
+      this.ui.setHudVisible(this.hudVisible);
+    }
   }
 
   private togglePause(): void {
@@ -402,7 +443,11 @@ export class Game extends Phaser.Scene {
       seed: this.seed,
     };
 
-    this.ui.showEndPanel(summary);
+    if (this.uiReady) {
+      this.ui.showEndPanel(summary);
+    } else {
+      this.pendingEnd = summary;
+    }
     this.publishTick(counts, equilibrium);
   }
 
@@ -432,6 +477,131 @@ export class Game extends Phaser.Scene {
       return score;
     }
     return previous > 0 ? previous : null;
+  }
+
+  private decorateFactionSprite(sprite: Phaser.Physics.Arcade.Image, faction: FactionId, fresh: boolean): void {
+    sprite.setTexture(TEXTURE_KEY[faction]);
+    sprite.setDisplaySize(ENTITY_SIZE, ENTITY_SIZE);
+    sprite.setOrigin(0.5, 0.5);
+    sprite.setTint(this.palette[faction]);
+    if (fresh) {
+      sprite.setAlpha(Phaser.Math.FloatBetween(0.82, 1));
+    }
+    sprite.setData('baseSpeed', SPEED[faction] * BASE_SPEED);
+    if (faction === 'Water' && typeof sprite.getData('wavePhase') !== 'number') {
+      sprite.setData('wavePhase', Phaser.Math.FloatBetween(0, Math.PI * 2));
+    }
+    const body = sprite.body as Phaser.Physics.Arcade.Body | null;
+    if (body) {
+      const baseSpeed = (sprite.getData('baseSpeed') as number) || BASE_SPEED;
+      body.maxVelocity.set(baseSpeed * 1.4, baseSpeed * 1.4);
+      if (fresh) {
+        body.velocity.setLength(baseSpeed);
+      }
+    }
+    const existingTween = sprite.getData('animTween') as Phaser.Tweens.Tween | undefined;
+    if (existingTween) existingTween.remove();
+    sprite.setScale(1);
+    sprite.setAngle(0);
+    const tween = this.createFactionTween(sprite, faction);
+    sprite.setData('animTween', tween ?? null);
+    if (!sprite.getData('animCleanup')) {
+      sprite.once(Phaser.GameObjects.Events.DESTROY, () => {
+        const stored = sprite.getData('animTween') as Phaser.Tweens.Tween | undefined;
+        if (stored) stored.remove();
+      });
+      sprite.setData('animCleanup', true);
+    }
+  }
+
+  private createFactionTween(sprite: Phaser.Physics.Arcade.Image, faction: FactionId): Phaser.Tweens.Tween | null {
+    switch (faction) {
+      case 'Fire':
+        return this.tweens.add({
+          targets: sprite,
+          duration: 480,
+          scale: { from: 1, to: 1.12 },
+          yoyo: true,
+          repeat: -1,
+          ease: Phaser.Math.Easing.Sine.InOut,
+        });
+      case 'Water':
+        return this.tweens.add({
+          targets: sprite,
+          duration: 900,
+          scaleX: { from: 0.98, to: 1.04 },
+          scaleY: { from: 1.02, to: 0.96 },
+          yoyo: true,
+          repeat: -1,
+          ease: Phaser.Math.Easing.Sine.InOut,
+        });
+      case 'Earth':
+        return this.tweens.add({
+          targets: sprite,
+          duration: 1200,
+          scaleY: { from: 1, to: 0.94 },
+          yoyo: true,
+          repeat: -1,
+          ease: Phaser.Math.Easing.Quadratic.InOut,
+        });
+      default:
+        return null;
+    }
+  }
+
+  private applyFactionBehaviours(dt: number): void {
+    const fireSprites = this.groups.Fire.getChildren() as Phaser.Physics.Arcade.Image[];
+    fireSprites.forEach((sprite) => this.updateFireBehaviour(sprite, dt));
+    const waterSprites = this.groups.Water.getChildren() as Phaser.Physics.Arcade.Image[];
+    waterSprites.forEach((sprite) => this.updateWaterBehaviour(sprite, dt));
+    const earthSprites = this.groups.Earth.getChildren() as Phaser.Physics.Arcade.Image[];
+    earthSprites.forEach((sprite) => this.updateEarthBehaviour(sprite, dt));
+  }
+
+  private updateFireBehaviour(sprite: Phaser.Physics.Arcade.Image, dt: number): void {
+    if (!sprite.active) return;
+    const body = sprite.body as Phaser.Physics.Arcade.Body | null;
+    if (!body) return;
+    const jitter = 45;
+    body.velocity.x += Phaser.Math.FloatBetween(-jitter, jitter) * dt;
+    body.velocity.y += Phaser.Math.FloatBetween(-jitter, jitter) * dt;
+    this.maintainBaseSpeed(sprite, 0.25);
+  }
+
+  private updateWaterBehaviour(sprite: Phaser.Physics.Arcade.Image, dt: number): void {
+    if (!sprite.active) return;
+    const body = sprite.body as Phaser.Physics.Arcade.Body | null;
+    if (!body) return;
+    let phase = sprite.getData('wavePhase') as number | undefined;
+    if (typeof phase !== 'number') {
+      phase = Phaser.Math.FloatBetween(0, Math.PI * 2);
+    }
+    phase += dt * 3.2;
+    sprite.setData('wavePhase', phase);
+    body.velocity.rotate(Math.sin(phase) * 0.05);
+    this.maintainBaseSpeed(sprite, 0.08);
+  }
+
+  private updateEarthBehaviour(sprite: Phaser.Physics.Arcade.Image, dt: number): void {
+    if (!sprite.active) return;
+    const body = sprite.body as Phaser.Physics.Arcade.Body | null;
+    if (!body) return;
+    body.velocity.scale(Phaser.Math.Clamp(1 - dt * 0.18, 0.7, 1));
+    this.maintainBaseSpeed(sprite, 0.04);
+  }
+
+  private maintainBaseSpeed(sprite: Phaser.Physics.Arcade.Image, lerp: number): void {
+    const body = sprite.body as Phaser.Physics.Arcade.Body | null;
+    if (!body) return;
+    const baseSpeed = (sprite.getData('baseSpeed') as number) || BASE_SPEED;
+    const current = body.velocity.length();
+    if (current <= 1) {
+      const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+      body.velocity.setToPolar(angle, baseSpeed);
+      return;
+    }
+    const newLength = Phaser.Math.Linear(current, baseSpeed, lerp);
+    body.velocity.setLength(newLength);
   }
 
   private refreshAndPublish(): void {
