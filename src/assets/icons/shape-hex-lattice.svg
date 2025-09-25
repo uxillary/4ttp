@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="icon-shape-hex" viewBox="0 0 128 128" role="img" aria-labelledby="t" fill="none"
+     stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="var(--sw,6)">
+  <title id="t">Hex Lattice</title>
+  <!-- outer shell -->
+  <path d="M64 14l40 24v52l-40 24-40-24V38z"/>
+  <!-- inner frame -->
+  <path d="M64 34l26 16v28L64 94 38 78V50z"/>
+  <!-- lattice -->
+  <path d="M64 42v52"/>
+  <path d="M48 54l32 20M80 54l-32 20"/>
+  <!-- anchor nodes -->
+  <circle cx="64" cy="40" r="4"/>
+  <circle cx="90" cy="56" r="4"/>
+  <circle cx="38" cy="56" r="4"/>
+  <circle cx="64" cy="100" r="4"/>
+</svg>

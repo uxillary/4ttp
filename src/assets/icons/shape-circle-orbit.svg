@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="icon-shape-circle" viewBox="0 0 128 128" role="img" aria-labelledby="t" fill="none"
+     stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="var(--sw,6)">
+  <title id="t">Circle Orbit</title>
+  <!-- outer halo -->
+  <circle cx="64" cy="64" r="46"/>
+  <path d="M26 72a38 38 0 1076-16"/>
+  <!-- inner core -->
+  <circle cx="64" cy="64" r="20"/>
+  <path d="M64 44v12M64 76v12"/>
+  <!-- orbital nodes -->
+  <circle cx="42" cy="54" r="4"/>
+  <circle cx="90" cy="70" r="4"/>
+  <path d="M42 54l12 6M90 70l-12-6"/>
+</svg>
