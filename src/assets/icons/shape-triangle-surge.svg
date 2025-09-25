@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="icon-shape-triangle" viewBox="0 0 128 128" role="img" aria-labelledby="t" fill="none"
+     stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="var(--sw,6)">
+  <title id="t">Triangle Surge</title>
+  <!-- outer glyph -->
+  <path d="M64 14l46 84H18z"/>
+  <!-- inner circuit -->
+  <path d="M64 34l30 54H34z"/>
+  <path d="M64 54l14 26H50z"/>
+  <!-- energy nodes -->
+  <circle cx="64" cy="40" r="5"/>
+  <circle cx="86" cy="80" r="4"/>
+  <circle cx="42" cy="80" r="4"/>
+  <!-- trace -->
+  <path d="M64 45v14M64 70v8"/>
+</svg>

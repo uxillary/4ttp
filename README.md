@@ -46,6 +46,9 @@ Single-color SVGs that match the techno-element vibe live in `src/assets/icons`:
 - `fire-thermal-protocol.svg` – flame profile with protocol nodes for fiery abilities.
 - `water-liquid-node.svg` – droplet silhouette with lattice nodes for support/flow skills.
 - `earth-core-process.svg` – strata badge with a central core for defensive effects.
+- `shape-triangle-surge.svg` – angular surge glyph echoing the Fire faction entity profile.
+- `shape-circle-orbit.svg` – orbital ring motif mirroring the Water faction entity silhouette.
+- `shape-hex-lattice.svg` – layered lattice hex emblem representing the Earth faction entity.
 
 Each icon is built with rounded strokes, scales crisply from 24–128px, and respects `currentColor`. Adjust stroke weight with the `--sw` CSS variable (defaults to `6`).
 
