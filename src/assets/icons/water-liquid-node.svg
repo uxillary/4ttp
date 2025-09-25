@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="icon-water-liquid" viewBox="0 0 128 128" role="img" aria-labelledby="t" fill="none"
+     stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="var(--sw,6)">
+  <title id="t">Liquid Node</title>
+  <!-- droplet -->
+  <path d="M64 14c16 26 36 44 36 64 0 22-16 38-36 38S28 100 28 78c0-20 20-38 36-64z"/>
+  <!-- inner lattice -->
+  <circle cx="64" cy="78" r="10"/>
+  <circle cx="44" cy="86" r="7"/>
+  <circle cx="84" cy="92" r="7"/>
+  <path d="M54 82l10-4 10 8M44 86l20-8M84 92l-10-8"/>
+</svg>

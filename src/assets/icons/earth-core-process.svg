@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="icon-earth-core" viewBox="0 0 128 128" role="img" aria-labelledby="t" fill="none"
+     stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="var(--sw,6)">
+  <title id="t">Core Process</title>
+  <!-- strata -->
+  <path d="M16 88l18-28 22-10 22 10 18 28H16z"/>
+  <path d="M28 88l20-14 20 14"/>
+  <!-- core -->
+  <circle cx="64" cy="72" r="10"/>
+  <!-- micro traces -->
+  <path d="M64 62v-8M54 72h-8M82 72h8M64 82v8"/>
+</svg>
