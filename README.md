@@ -38,3 +38,32 @@ npm run build
 ```
 
 The production bundle lands in `dist/`. Zip the **contents** of that folder (not the folder itself) for itch.io, then follow the checklist in `DEPLOYING.md`.
+
+## Elemental Icon Assets
+
+Single-color SVGs that match the techno-element vibe live in `src/assets/icons`:
+
+- `fire-thermal-protocol.svg` – flame profile with protocol nodes for fiery abilities.
+- `water-liquid-node.svg` – droplet silhouette with lattice nodes for support/flow skills.
+- `earth-core-process.svg` – strata badge with a central core for defensive effects.
+
+Each icon is built with rounded strokes, scales crisply from 24–128px, and respects `currentColor`. Adjust stroke weight with the `--sw` CSS variable (defaults to `6`).
+
+```css
+.protocol-icon {
+  width: 48px;
+  height: 48px;
+  color: #55e6a5; /* example brand */
+}
+
+.protocol-icon svg {
+  width: 100%;
+  height: 100%;
+  --sw: 5;
+}
+
+/* Optional motion hooks */
+#icon-fire-thermal { filter: drop-shadow(0 0 2px currentColor); animation: flicker 0.28s infinite steps(2, end); }
+#icon-water-liquid circle { animation: pulse 1.6s ease-in-out infinite; }
+.hit #icon-earth-core { animation: wiggle 0.18s linear 1; }
+```

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="icon-fire-thermal" viewBox="0 0 128 128" role="img" aria-labelledby="t" fill="none"
+     stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="var(--sw,6)">
+  <title id="t">Thermal Protocol</title>
+  <!-- outer flame -->
+  <path d="M74 16c4 10-3 18-10 26-6 7-8 14-6 22 3-5 9-9 16-9 12 0 22 9 22 22 0 18-16 31-36 31S24 95 24 76c0-16 12-30 28-42 6-5 10-11 12-18" />
+  <!-- inner spark -->
+  <path d="M58 76c2-4 7-7 12-7 7 0 12 5 12 12 0 9-8 16-18 16-9 0-16-6-16-14" />
+  <!-- protocol nodes -->
+  <circle cx="97" cy="38" r="4"/>
+  <circle cx="108" cy="28" r="4"/>
+  <circle cx="88" cy="26" r="4"/>
+  <path d="M92 28l9 8M97 38l7-10M88 26l9 2"/>
+</svg>
