@@ -1,0 +1,62 @@
+/* Elemental protocol icon animations */
+
+#icon-fire-thermal {
+  filter: drop-shadow(0 0 6px currentColor);
+  animation: flicker 0.28s steps(2, end) infinite;
+  transform-origin: center;
+}
+
+@keyframes flicker {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.03);
+  }
+  65% {
+    transform: scale(0.99);
+  }
+}
+
+#icon-water-liquid circle {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+#icon-water-liquid circle:nth-of-type(2) {
+  animation-delay: 0.2s;
+}
+
+#icon-water-liquid circle:nth-of-type(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+.hit #icon-earth-core {
+  animation: wiggle 0.18s linear 1;
+  transform-origin: center;
+}
+
+@keyframes wiggle {
+  0% {
+    transform: translateY(0);
+  }
+  35% {
+    transform: translateY(1px);
+  }
+  65% {
+    transform: translateY(-1px);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
