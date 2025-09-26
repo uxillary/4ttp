@@ -272,6 +272,20 @@ export class Game extends Phaser.Scene {
   };
 
   private convert(sprite: Phaser.Physics.Arcade.Image, faction: FactionId): void {
+    const previousFaction = sprite.getData('faction') as FactionId | null;
+    if (previousFaction === faction) {
+      return;
+    }
+
+    if (previousFaction && this.groups[previousFaction]) {
+      this.groups[previousFaction].remove(sprite);
+    }
+
+    const targetGroup = this.groups[faction];
+    if (targetGroup && !targetGroup.contains(sprite)) {
+      targetGroup.add(sprite);
+    }
+
     sprite.setData('faction', faction);
     sprite.setData('shielded', false);
     this.decorateFactionSprite(sprite, faction, false);
@@ -519,30 +533,40 @@ export class Game extends Phaser.Scene {
       case 'Fire':
         return this.tweens.add({
           targets: sprite,
-          duration: 480,
-          scale: { from: 1, to: 1.12 },
-          yoyo: true,
+          duration: 280,
           repeat: -1,
-          ease: Phaser.Math.Easing.Sine.InOut,
+          ease: 'Linear',
+          keyframes: [
+            { offset: 0, scaleX: 1, scaleY: 1, angle: 0.2 },
+            { offset: 0.4, scaleX: 1.03, scaleY: 1.03, angle: -0.4 },
+            { offset: 0.65, scaleX: 0.99, scaleY: 0.99, angle: 0.3 },
+            { offset: 1, scaleX: 1, scaleY: 1, angle: 0 },
+          ],
         });
       case 'Water':
         return this.tweens.add({
           targets: sprite,
-          duration: 900,
-          scaleX: { from: 0.98, to: 1.04 },
-          scaleY: { from: 1.02, to: 0.96 },
-          yoyo: true,
+          duration: 1600,
           repeat: -1,
           ease: Phaser.Math.Easing.Sine.InOut,
+          keyframes: [
+            { offset: 0, scaleX: 0.98, scaleY: 1.02, angle: -0.4 },
+            { offset: 0.5, scaleX: 1.04, scaleY: 0.96, angle: 0.4 },
+            { offset: 1, scaleX: 0.98, scaleY: 1.02, angle: -0.4 },
+          ],
         });
       case 'Earth':
         return this.tweens.add({
           targets: sprite,
-          duration: 1200,
-          scaleY: { from: 1, to: 0.94 },
-          yoyo: true,
+          duration: 320,
           repeat: -1,
-          ease: Phaser.Math.Easing.Quadratic.InOut,
+          ease: Phaser.Math.Easing.Sine.InOut,
+          keyframes: [
+            { offset: 0, scaleX: 1, scaleY: 1, angle: 0 },
+            { offset: 0.35, scaleX: 0.98, scaleY: 1.02, angle: 1.2 },
+            { offset: 0.65, scaleX: 1.02, scaleY: 0.98, angle: -1.2 },
+            { offset: 1, scaleX: 1, scaleY: 1, angle: 0 },
+          ],
         });
       default:
         return null;

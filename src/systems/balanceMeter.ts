@@ -19,7 +19,7 @@ export class BalanceMeter {
   counts(): Counts {
     const counts = {} as Counts;
     FACTIONS.forEach((id) => {
-      counts[id] = this.groups[id].getLength();
+      counts[id] = this.groups[id].countActive(true);
     });
     return counts;
   }

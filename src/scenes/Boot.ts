@@ -1,7 +1,15 @@
 import Phaser from "phaser";
-import { ENTITY_SIZE } from "../core/constants";
-import { FACTIONS, TEXTURE_KEY } from "../core/factions";
+import { TEXTURE_KEY } from "../core/factions";
 import type { FactionId } from "../core/types";
+import fireIconSvg from "../assets/icons/fire-thermal-protocol.svg?raw";
+import waterIconSvg from "../assets/icons/water-liquid-node.svg?raw";
+import earthIconSvg from "../assets/icons/earth-core-process.svg?raw";
+
+const ICON_SVGS: Record<FactionId, string> = {
+  Fire: fireIconSvg,
+  Water: waterIconSvg,
+  Earth: earthIconSvg,
+};
 
 export class Boot extends Phaser.Scene {
   constructor() {
@@ -11,12 +19,13 @@ export class Boot extends Phaser.Scene {
   preload(): void {
     this.ensurePixelTexture();
     this.ensureSquareTexture();
-    this.createFactionTextures();
+    this.loadFactionIcons();
     this.createScanlineTexture();
     this.createUiTextures();
   }
 
   create(): void {
+    this.applyIconFilters();
     this.scene.launch('UI');
     this.scene.start('Game');
   }
@@ -39,68 +48,44 @@ export class Boot extends Phaser.Scene {
     canvas.refresh();
   }
 
-  private createFactionTextures(): void {
-    const graphics = this.add.graphics();
-    graphics.setVisible(false);
-    const size = ENTITY_SIZE * 2.6;
-    const half = size / 2;
-
-    const drawGlow = (radius: number) => {
-      graphics.fillStyle(0xffffff, 0.12);
-      graphics.fillCircle(half, half, radius * 1.8);
-      graphics.fillStyle(0xffffff, 0.22);
-      graphics.fillCircle(half, half, radius * 1.3);
-    };
-
-    const drawTriangle = () => {
-      const radius = ENTITY_SIZE * 0.7;
-      drawGlow(radius);
-      graphics.fillStyle(0xffffff, 1);
-      graphics.fillTriangle(
-        half,
-        half - radius,
-        half - radius,
-        half + radius,
-        half + radius,
-        half + radius,
-      );
-    };
-
-    const drawCircle = () => {
-      const radius = ENTITY_SIZE * 0.8;
-      drawGlow(radius);
-      graphics.fillStyle(0xffffff, 1);
-      graphics.fillCircle(half, half, radius);
-      graphics.lineStyle(2, 0xffffff, 0.35);
-      graphics.strokeCircle(half, half, radius * 1.1);
-    };
-
-    const drawHex = () => {
-      const radius = ENTITY_SIZE * 0.82;
-      drawGlow(radius);
-      graphics.fillStyle(0xffffff, 1);
-      const points: Phaser.Math.Vector2[] = [];
-      for (let i = 0; i < 6; i += 1) {
-        const angle = Phaser.Math.DegToRad(60 * i - 30);
-        points.push(new Phaser.Math.Vector2(half + Math.cos(angle) * radius, half + Math.sin(angle) * radius));
+  private loadFactionIcons(): void {
+    (Object.entries(ICON_SVGS) as Array<[FactionId, string]>).forEach(([id, rawSvg]) => {
+      const key = TEXTURE_KEY[id];
+      if (this.textures.exists(key)) {
+        return;
       }
-      graphics.fillPoints(points, true);
-    };
-
-    const drawLookup: Record<FactionId, () => void> = {
-      Fire: drawTriangle,
-      Water: drawCircle,
-      Earth: drawHex,
-    };
-
-    FACTIONS.forEach((id) => {
-      if (this.textures.exists(TEXTURE_KEY[id])) return;
-      graphics.clear();
-      drawLookup[id]!();
-      graphics.generateTexture(TEXTURE_KEY[id], size, size);
+      const sanitized = this.sanitizeSvg(rawSvg);
+      const blob = new Blob([sanitized], { type: 'image/svg+xml' });
+      const objectUrl = URL.createObjectURL(blob);
+      const handleComplete = (fileKey: string) => {
+        if (fileKey === key) {
+          URL.revokeObjectURL(objectUrl);
+          this.load.off(Phaser.Loader.Events.FILE_COMPLETE, handleComplete);
+        }
+      };
+      this.load.on(Phaser.Loader.Events.FILE_COMPLETE, handleComplete);
+      this.load.svg(key, objectUrl);
     });
+  }
 
-    graphics.destroy();
+  private applyIconFilters(): void {
+    (Object.keys(ICON_SVGS) as FactionId[]).forEach((id) => {
+      const key = TEXTURE_KEY[id];
+      if (!this.textures.exists(key)) {
+        return;
+      }
+      const texture = this.textures.get(key);
+      texture.setFilter(Phaser.Textures.FilterMode.LINEAR);
+    });
+  }
+
+  private sanitizeSvg(raw: string): string {
+    return raw
+      .replace(/currentColor/g, '#ffffff')
+      .replace(/var\(--sw,\s*6\)/g, '6')
+      .replace(/>\s+</g, '><')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
   }
 
   private createScanlineTexture(): void {
