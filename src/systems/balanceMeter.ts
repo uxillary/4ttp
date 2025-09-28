@@ -3,6 +3,11 @@ import type { FactionId } from '../core/types';
 import { FACTIONS } from '../core/factions';
 import type { Palette } from '../core/palette';
 
+const EQUILIBRIUM_HOT = Phaser.Display.Color.ValueToColor(0xff6347);
+const EQUILIBRIUM_COOL = Phaser.Display.Color.ValueToColor(0x55e6a5);
+const SEGMENT_LIGHT = Phaser.Display.Color.ValueToColor(0xffffff);
+const SEGMENT_DARK = Phaser.Display.Color.ValueToColor(0x0c2034);
+
 export type FactionCounts = Record<FactionId, number>;
 
 type Counts = FactionCounts;
@@ -73,6 +78,7 @@ export class BalanceBar {
   private readonly graphics: Phaser.GameObjects.Graphics;
   private readonly width: number;
   private readonly height: number;
+  private displayedEquilibrium = 1;
 
   constructor(scene: Phaser.Scene, x: number, y: number, width = 320, height = 12) {
     this.width = width;
@@ -81,16 +87,24 @@ export class BalanceBar {
     scene.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.graphics.destroy());
   }
 
-  update(counts: Counts, palette: Palette): void {
+  update(counts: Counts, palette: Palette, equilibrium = 1): void {
     const total = FACTIONS.reduce((sum, id) => sum + counts[id], 0);
     const { width } = this;
     this.graphics.clear();
-    this.graphics.fillStyle(0x0c1526, 0.85);
-    this.graphics.fillRoundedRect(0, 0, width, this.height, 6);
+    this.displayedEquilibrium = Phaser.Math.Linear(this.displayedEquilibrium, equilibrium, 0.18);
+    const stability = Phaser.Display.Color.Interpolate.ColorWithColor(
+      EQUILIBRIUM_HOT,
+      EQUILIBRIUM_COOL,
+      100,
+      Math.floor(this.displayedEquilibrium * 100)
+    );
+    const borderColor = Phaser.Display.Color.GetColor(stability.r, stability.g, stability.b);
+    this.graphics.fillStyle(0x05101d, 0.92);
+    this.graphics.fillRoundedRect(0, 0, width, this.height, 8);
 
     if (total <= 0) {
-      this.graphics.lineStyle(1, 0x1f2c44, 0.9);
-      this.graphics.strokeRoundedRect(0, 0, width, this.height, 6);
+      this.graphics.lineStyle(2, borderColor, 0.95);
+      this.graphics.strokeRoundedRect(0, 0, width, this.height, 8);
       return;
     }
 
@@ -99,22 +113,42 @@ export class BalanceBar {
       const fraction = counts[id] / total;
       const segmentWidth = index === FACTIONS.length - 1 ? width - offset : Math.max(width * fraction, 0);
       const color = palette[id];
+      const base = Phaser.Display.Color.IntegerToColor(color);
+      const lighter = Phaser.Display.Color.Interpolate.ColorWithColor(
+        base,
+        SEGMENT_LIGHT,
+        100,
+        24
+      );
+      const darker = Phaser.Display.Color.Interpolate.ColorWithColor(
+        base,
+        SEGMENT_DARK,
+        100,
+        38
+      );
+      const topColor = Phaser.Display.Color.GetColor(lighter.r, lighter.g, lighter.b);
+      const bottomColor = Phaser.Display.Color.GetColor(darker.r, darker.g, darker.b);
       const radius: Phaser.Types.GameObjects.Graphics.RoundedRectRadius =
         index === 0
-          ? { tl: 6, bl: 6 }
+          ? { tl: 8, bl: 8 }
           : index === FACTIONS.length - 1
-            ? { tr: 6, br: 6 }
+            ? { tr: 8, br: 8 }
             : { tl: 0, tr: 0, bl: 0, br: 0 };
-      this.graphics.fillStyle(color, 0.92);
+      this.graphics.fillGradientStyle(topColor, topColor, bottomColor, bottomColor, 0.98, 0.98, 0.92, 0.92);
       this.graphics.fillRoundedRect(offset, 0, segmentWidth, this.height, radius);
       offset += segmentWidth;
     });
-
-    this.graphics.lineStyle(1, 0x1f2c44, 0.9);
-    this.graphics.strokeRoundedRect(0, 0, width, this.height, 6);
+    this.graphics.lineStyle(2, borderColor, 0.95);
+    this.graphics.strokeRoundedRect(0, 0, width, this.height, 8);
+    this.graphics.lineStyle(1, borderColor, 0.4);
+    this.graphics.strokeRoundedRect(2, 2, width - 4, this.height - 4, 6);
   }
 
   setVisible(visible: boolean): void {
     this.graphics.setVisible(visible);
+  }
+
+  setPosition(x: number, y: number): void {
+    this.graphics.setPosition(x, y);
   }
 }

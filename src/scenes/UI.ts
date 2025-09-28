@@ -1,7 +1,8 @@
 import Phaser from "phaser";
 import type { Mode } from "../core/types";
 import { getPalette } from "../core/palette";
-import { NAME_MAP } from "../core/factions";
+import { NAME_MAP, TEXTURE_KEY, FACTIONS } from "../core/factions";
+import type { FactionId } from "../core/types";
 import { BalanceBar, type FactionCounts, computeEquilibrium } from "../systems/balanceMeter";
 import type { CooldownState, AbilityKey } from "../systems/interventions";
 import { ABILITY_METADATA } from "../systems/interventions";
@@ -9,27 +10,46 @@ import type { GameTickPayload, GameEndSummary } from "./types";
 const FONT_FAMILY = "ui-monospace, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace";
 const HUD_WIDTH = 360;
 const ABILITY_ORDER: AbilityKey[] = ['1', '2', '3', '4', '5'];
+const TOGGLE_KEYS = ['audio', 'hud', 'palette', 'speed', 'pause', 'info'] as const;
+type ToggleKey = (typeof TOGGLE_KEYS)[number];
 type AbilityMeta = (typeof ABILITY_METADATA)[AbilityKey];
 type AbilityButton = {
   container: Phaser.GameObjects.Container;
   background: Phaser.GameObjects.Image;
+  keycap: Phaser.GameObjects.Image;
+  keycapLabel: Phaser.GameObjects.Text;
   label: Phaser.GameObjects.Text;
+  detail: Phaser.GameObjects.Text;
   cooldown: Phaser.GameObjects.Text;
   meta: AbilityMeta;
+};
+
+type StatusToggle = {
+  container: Phaser.GameObjects.Container;
+  icon: Phaser.GameObjects.Text;
+  label: Phaser.GameObjects.Text;
+  key: ToggleKey;
 };
 export class UI extends Phaser.Scene {
   private hud!: Phaser.GameObjects.Container;
   private modeText!: Phaser.GameObjects.Text;
   private timerText!: Phaser.GameObjects.Text;
-  private countsText!: Phaser.GameObjects.Text;
+  private factionDisplays: Record<FactionId, { container: Phaser.GameObjects.Container; icon: Phaser.GameObjects.Image; glow: Phaser.GameObjects.Image | null; count: Phaser.GameObjects.Text; label: Phaser.GameObjects.Text }> = {} as Record<FactionId, { container: Phaser.GameObjects.Container; icon: Phaser.GameObjects.Image; glow: Phaser.GameObjects.Image | null; count: Phaser.GameObjects.Text; label: Phaser.GameObjects.Text }>;
   private equilibriumText!: Phaser.GameObjects.Text;
+  private equilibriumValue = 1;
   private balanceBar!: BalanceBar;
   private abilityBar!: Phaser.GameObjects.Container;
   private abilityButtons: Record<AbilityKey, AbilityButton> = {} as Record<AbilityKey, AbilityButton>;
-  private settingsPanel!: Phaser.GameObjects.Container;
-  private settingsText!: Phaser.GameObjects.Text;
+  private statusBar!: Phaser.GameObjects.Container;
+  private statusToggles: Record<ToggleKey, StatusToggle> = {} as Record<ToggleKey, StatusToggle>;
   private tooltip!: Phaser.GameObjects.Container;
+  private tooltipTitle!: Phaser.GameObjects.Text;
   private tooltipText!: Phaser.GameObjects.Text;
+  private infoOverlay!: Phaser.GameObjects.Container;
+  private infoOverlayBg!: Phaser.GameObjects.Rectangle;
+  private infoOverlayTitle!: Phaser.GameObjects.Text;
+  private infoOverlayText!: Phaser.GameObjects.Text;
+  private infoOverlayFooter!: Phaser.GameObjects.Text;
   private shiftKey?: Phaser.Input.Keyboard.Key;
   private hoveredAbility: AbilityKey | null = null;
   private tooltipKey: AbilityKey | null = null;
@@ -45,20 +65,27 @@ export class UI extends Phaser.Scene {
   private hudVisible = true;
   private paused = false;
   private ready = false;
+  private colorMode: 'default' | 'alt' = 'default';
+  private infoVisible = false;
+  private speedValue = 1;
   constructor() {
     super("UI");
   }
   create(): void {
     this.createHud();
     this.createAbilityBar();
-    this.createSettingsPanel();
+    this.createStatusBar();
     this.createTooltip();
     this.createEndPanel();
+    this.createInfoOverlay();
     this.shiftKey = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
+    this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.ready = false;
+      this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     });
     this.ready = true;
+    this.handleResize(this.scale.gameSize);
     this.events.emit('ui-ready');
   }
   override update(): void {
@@ -85,10 +112,14 @@ export class UI extends Phaser.Scene {
     this.lastCounts.Fire = Fire;
     this.lastCounts.Water = Water;
     this.lastCounts.Earth = Earth;
-    const countsLine = `${NAME_MAP.Fire.split(' ')[0]} ${Fire.toString().padStart(3, ' ')}   ${NAME_MAP.Water.split(' ')[0]} ${Water.toString().padStart(3, ' ')}   ${NAME_MAP.Earth.split(' ')[0]} ${Earth.toString().padStart(3, ' ')}`;
-    this.countsText.setText(countsLine);
-    this.equilibriumText.setText(`Equilibrium: ${(payload.equilibrium * 100).toFixed(0)}%`);
-    this.balanceBar.update(this.lastCounts, getPalette(this.colorblind));
+    FACTIONS.forEach((id) => {
+      const display = this.factionDisplays[id];
+      if (!display) return;
+      display.count.setText(payload.counts[id].toString().padStart(3, ' '));
+    });
+    this.equilibriumValue = Phaser.Math.Linear(this.equilibriumValue, payload.equilibrium, 0.15);
+    this.equilibriumText.setText(`Equilibrium: ${(this.equilibriumValue * 100).toFixed(0)}%`);
+    this.balanceBar.update(this.lastCounts, getPalette(this.colorblind), this.equilibriumValue);
     this.paused = payload.paused;
     this.updateSettingsDisplay();
     if (!payload.ended) {
@@ -113,16 +144,41 @@ export class UI extends Phaser.Scene {
     this.muted = value;
     this.updateSettingsDisplay();
   }
+  setSpeedMultiplier(multiplier: number): void {
+    this.speedValue = multiplier;
+    this.updateSettingsDisplay();
+  }
+  setInfoVisible(visible: boolean): void {
+    if (this.infoVisible === visible) return;
+    this.infoVisible = visible;
+    this.infoOverlay.setVisible(true);
+    this.tweens.killTweensOf(this.infoOverlay);
+    this.tweens.add({
+      targets: this.infoOverlay,
+      alpha: visible ? 1 : 0,
+      duration: 220,
+      ease: Phaser.Math.Easing.Sine.InOut,
+      onComplete: () => {
+        if (!visible) {
+          this.infoOverlay.setVisible(false);
+        }
+      },
+    });
+    this.updateSettingsDisplay();
+  }
   setColorblind(value: boolean): void {
     this.colorblind = value;
-    this.updateSettingsDisplay();
-    this.balanceBar.update(this.lastCounts, getPalette(this.colorblind));
+    this.colorMode = value ? 'alt' : 'default';
     const palette = getPalette(this.colorblind);
+    this.updateSettingsDisplay();
+    this.balanceBar.update(this.lastCounts, palette, this.equilibriumValue);
+    this.refreshFactionIcons(palette);
     ABILITY_ORDER.forEach((key) => {
       const button = this.abilityButtons[key];
       if (!button) return;
       const accent = palette.Fire.toString(16).padStart(6, '0');
       button.label.setColor(`#${accent}`);
+      button.detail.setColor(this.colorblind ? '#d1e4ff' : '#7fb8ff');
     });
   }
   setHudVisible(visible: boolean): void {
@@ -130,7 +186,7 @@ export class UI extends Phaser.Scene {
     this.hud.setVisible(visible);
     this.balanceBar.setVisible(visible);
     this.abilityBar.setVisible(visible);
-    this.settingsPanel.setVisible(visible);
+    this.statusBar.setAlpha(visible ? 1 : 0.6);
     if (!visible) {
       this.hideTooltip();
     }
@@ -180,96 +236,216 @@ Seed: ${summary.seed}`);
   setMutedAndColorblind(muted: boolean, colorblind: boolean): void {
     this.muted = muted;
     this.colorblind = colorblind;
+    this.colorMode = colorblind ? 'alt' : 'default';
     const palette = getPalette(this.colorblind);
+    this.updateSettingsDisplay();
+    this.balanceBar.update(this.lastCounts, palette, this.equilibriumValue);
+    this.refreshFactionIcons(palette);
     ABILITY_ORDER.forEach((key) => {
       const button = this.abilityButtons[key];
       if (!button) return;
       const accent = palette.Fire.toString(16).padStart(6, '0');
       button.label.setColor(`#${accent}`);
+      button.detail.setColor(this.colorblind ? '#d1e4ff' : '#7fb8ff');
     });
-    this.updateSettingsDisplay();
-    this.balanceBar.update(this.lastCounts, palette);
   }
   private createHud(): void {
     this.hud = this.add.container(24, 24).setDepth(20).setScrollFactor(0);
-    const bg = this.add.rectangle(0, 0, HUD_WIDTH, 134, 0x041227, 0.72)
-      .setOrigin(0)
-      .setStrokeStyle(2, 0x1a2a46, 0.9);
-    const primary = { fontFamily: FONT_FAMILY, fontSize: '20px', color: '#cfe8ff' } as const;
-    const secondary = { fontFamily: FONT_FAMILY, fontSize: '16px', color: '#8fb7ff' } as const;
-    this.modeText = this.add.text(12, 12, 'Mode: Balance', primary);
-    this.timerText = this.add.text(12, 38, 'Time: 0.0s', primary);
-    this.countsText = this.add.text(12, 64, 'Therm 0   Liquid 0   Core 0', secondary);
-    this.equilibriumText = this.add.text(12, 90, 'Equilibrium: 100%', secondary);
-    this.hud.add([bg, this.modeText, this.timerText, this.countsText, this.equilibriumText]);
-    this.balanceBar = new BalanceBar(this, 24, 170, HUD_WIDTH - 48, 12);
+    const bg = this.add.image(0, 0, 'ui-card').setOrigin(0);
+    const primary = { fontFamily: FONT_FAMILY, fontSize: '20px', color: '#e5f6ff', shadow: { offsetX: 0, offsetY: 0, color: '#10395a', fill: true, blur: 4 } } as const;
+    const secondary = { fontFamily: FONT_FAMILY, fontSize: '16px', color: '#9bdcff' } as const;
+    this.modeText = this.add.text(28, 24, 'Mode: Balance', primary);
+    this.timerText = this.add.text(28, 52, 'Time: 0.0s', { ...primary, fontSize: '18px' });
+
+    const factionPalette = getPalette(false);
+    const baseY = 92;
+    const spacing = 110;
+    FACTIONS.forEach((faction, index) => {
+      const container = this.add.container(46 + index * spacing, baseY);
+      const glowKey = this.textures.exists(`${TEXTURE_KEY[faction]}-glow`) ? `${TEXTURE_KEY[faction]}-glow` : null;
+      const glow = glowKey
+        ? this.add.image(0, 0, glowKey).setOrigin(0.5).setScale(0.44).setAlpha(0.4).setBlendMode(Phaser.BlendModes.ADD)
+        : null;
+      const icon = this.add.image(0, 0, TEXTURE_KEY[faction]).setOrigin(0.5).setScale(0.42);
+      icon.setTint(factionPalette[faction]);
+      const label = this.add.text(0, 34, NAME_MAP[faction].split(' ')[0] ?? faction, { fontFamily: FONT_FAMILY, fontSize: '14px', color: '#79b7ff' }).setOrigin(0.5, 0);
+      const count = this.add.text(0, 50, '000', { fontFamily: FONT_FAMILY, fontSize: '18px', color: '#e7f7ff' }).setOrigin(0.5, 0);
+      const elements: Phaser.GameObjects.GameObject[] = [];
+      if (glow) elements.push(glow);
+      elements.push(icon, label, count);
+      container.add(elements);
+      this.hud.add(container);
+      this.factionDisplays[faction] = { container, icon, glow, label, count };
+    });
+
+    this.equilibriumText = this.add.text(28, 190, 'Equilibrium: 100%', secondary);
+
+    this.hud.add([bg, this.modeText, this.timerText, this.equilibriumText]);
+    this.hud.sendToBack(bg);
+
+    this.balanceBar = new BalanceBar(this, this.hud.x + 36, this.hud.y + 172, HUD_WIDTH - 24, 16);
   }
   private createAbilityBar(): void {
     this.abilityBar = this.add.container(this.scale.width / 2, this.scale.height - 82)
       .setDepth(25)
       .setScrollFactor(0);
-    const spacing = 126;
+    const spacing = 146;
     ABILITY_ORDER.forEach((key, index) => {
       const meta = ABILITY_METADATA[key];
-      const container = this.add.container(index * spacing - ((ABILITY_ORDER.length - 1) * spacing) / 2, 0);
-      const background = this.add.image(0, 0, 'ui-key').setOrigin(0.5).setAlpha(0.9).setTint(0x14324c);
-      const keyText = this.add.text(-30, -6, key, { fontFamily: FONT_FAMILY, fontSize: '18px', color: '#9bdcff' }).setOrigin(0.5);
-      const label = this.add.text(16, -6, meta.name, { fontFamily: FONT_FAMILY, fontSize: '18px', color: '#cfe8ff' }).setOrigin(0, 0.5);
-      const cooldown = this.add.text(0, 16, '', { fontFamily: FONT_FAMILY, fontSize: '14px', color: '#7aa5cc' }).setOrigin(0.5);
-      container.add([background, keyText, label, cooldown]);
-      container.setSize(110, 48);
-      container.setInteractive(new Phaser.Geom.Rectangle(-55, -24, 110, 48), Phaser.Geom.Rectangle.Contains);
+      const offset = index * spacing - ((ABILITY_ORDER.length - 1) * spacing) / 2;
+      const container = this.add.container(offset, 0);
+      const background = this.add.image(0, 0, 'ui-ability').setOrigin(0.5).setAlpha(0.96);
+      const keycap = this.add.image(-54, 0, 'ui-keycap').setOrigin(0.5).setAlpha(0.96);
+      const keycapLabel = this.add.text(-54, 0, key, { fontFamily: FONT_FAMILY, fontSize: '18px', color: '#e8faff' }).setOrigin(0.5);
+      const label = this.add.text(-18, -10, meta.name, { fontFamily: FONT_FAMILY, fontSize: '18px', color: '#cfe8ff' }).setOrigin(0, 0.5);
+      const detail = this.add.text(-18, 14, meta.hint ?? '', { fontFamily: FONT_FAMILY, fontSize: '13px', color: '#7fb8ff' }).setOrigin(0, 0.5);
+      const cooldown = this.add.text(0, 34, '', { fontFamily: FONT_FAMILY, fontSize: '13px', color: '#6fa4d9' }).setOrigin(0.5);
+      container.add([background, keycap, keycapLabel, label, detail, cooldown]);
+      container.setSize(132, 58);
+      container.setInteractive({
+        hitArea: new Phaser.Geom.Rectangle(-66, -29, 132, 58),
+        hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+        cursor: 'pointer',
+      });
       container.on('pointerover', () => {
-        background.setTint(0x1f4b7a);
+        background.setTint(0x174264);
+        keycap.setTint(0x22658c);
         this.hoveredAbility = key;
         this.showTooltipForKey(key, false);
       });
       container.on('pointerout', () => {
-        background.setTint(0x14324c);
+        background.clearTint();
+        keycap.clearTint();
         this.hoveredAbility = null;
         if (!(this.shiftKey?.isDown)) {
           this.hideTooltip();
         }
       });
+      container.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        const nativeEvent = pointer.event as PointerEvent | MouseEvent | TouchEvent | undefined;
+        nativeEvent?.stopPropagation?.();
+        nativeEvent?.stopImmediatePropagation?.();
+      });
+      container.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+        const nativeEvent = pointer.event as PointerEvent | MouseEvent | TouchEvent | undefined;
+        nativeEvent?.stopPropagation?.();
+        nativeEvent?.stopImmediatePropagation?.();
+        if (nativeEvent && 'button' in nativeEvent && nativeEvent.button !== 0) {
+          return;
+        }
+        this.events.emit('ability-clicked', key);
+      });
+      container.on('pointerupoutside', (pointer: Phaser.Input.Pointer) => {
+        const nativeEvent = pointer.event as PointerEvent | MouseEvent | TouchEvent | undefined;
+        nativeEvent?.stopPropagation?.();
+        nativeEvent?.stopImmediatePropagation?.();
+      });
       this.abilityBar.add(container);
-      this.abilityButtons[key] = { container, background, label, cooldown, meta };
+      this.abilityButtons[key] = { container, background, keycap, keycapLabel, label, detail, cooldown, meta };
     });
-    const hint = this.add.text(0, 60, 'Hold Shift for ability dossiers', {
+    const hint = this.add.text(0, 68, 'Hold Shift for ability dossiers', {
       fontFamily: FONT_FAMILY,
-      fontSize: '14px',
+      fontSize: '13px',
       color: '#6fa4d9'
     }).setOrigin(0.5);
     this.abilityBar.add(hint);
   }
-  private createSettingsPanel(): void {
-    this.settingsPanel = this.add.container(this.scale.width - 210, this.scale.height - 88)
-      .setDepth(25)
+  private createStatusBar(): void {
+    this.statusBar = this.add.container(this.scale.width - 234, 42)
+      .setDepth(45)
       .setScrollFactor(0);
-    const panelBg = this.add.rectangle(0, 0, 220, 86, 0x04152a, 0.78)
-      .setOrigin(0.5)
-      .setStrokeStyle(2, 0x12233a, 0.9);
-    this.settingsText = this.add.text(0, 0, '', {
-      fontFamily: FONT_FAMILY,
-      fontSize: '14px',
-      color: '#93c3ff',
-      align: 'center',
-    }).setOrigin(0.5);
-    this.settingsPanel.add([panelBg, this.settingsText]);
+    const background = this.add.image(0, 0, 'ui-status-pill').setOrigin(0.5);
+    const row = this.add.container(0, 0);
+    const toggleMeta: Record<ToggleKey, { icon: string; label: string }> = {
+      audio: { icon: '🔊', label: 'Audio' },
+      hud: { icon: '🖥', label: 'HUD' },
+      palette: { icon: '🎨', label: 'Palette' },
+      speed: { icon: '⏩', label: 'Speed' },
+      pause: { icon: '⏯', label: 'Flow' },
+      info: { icon: 'ℹ', label: 'Info' },
+    };
+    const spacing = 74;
+    TOGGLE_KEYS.forEach((key, index) => {
+      const meta = toggleMeta[key];
+      const container = this.add.container(index * spacing - ((TOGGLE_KEYS.length - 1) * spacing) / 2, 0);
+      const chip = this.add.image(0, 0, 'ui-status-chip').setOrigin(0.5);
+      const icon = this.add.text(0, -6, meta.icon, { fontFamily: FONT_FAMILY, fontSize: '18px', color: '#d5f6ff' }).setOrigin(0.5);
+      const label = this.add.text(0, 12, meta.label, { fontFamily: FONT_FAMILY, fontSize: '12px', color: '#8ebfff' }).setOrigin(0.5);
+      container.add([chip, icon, label]);
+      container.setSize(72, 42);
+      container.setInteractive(new Phaser.Geom.Rectangle(-36, -21, 72, 42), Phaser.Geom.Rectangle.Contains);
+      container.on('pointerover', () => chip.setTint(0x245c86));
+      container.on('pointerout', () => chip.clearTint());
+      container.on('pointerdown', () => this.events.emit('status-toggle', key));
+      row.add(container);
+      this.statusToggles[key] = { container, icon, label, key };
+    });
+    this.statusBar.add([background, row]);
     this.updateSettingsDisplay();
   }
   private createTooltip(): void {
     this.tooltip = this.add.container(0, 0).setDepth(40).setVisible(false).setScrollFactor(0);
-    const bg = this.add.rectangle(0, 0, 280, 96, 0x071629, 0.94)
-      .setOrigin(0.5)
-      .setStrokeStyle(2, 0x1d3a57, 0.9);
-    this.tooltipText = this.add.text(0, 0, '', {
+    const bg = this.add.image(0, 0, 'ui-tooltip').setOrigin(0.5).setAlpha(0.96);
+    const accent = this.add.rectangle(0, -40, 220, 2, 0x1f81ce, 0.32).setOrigin(0.5);
+    this.tooltipTitle = this.add.text(0, -56, '', {
       fontFamily: FONT_FAMILY,
-      fontSize: '16px',
-      color: '#d1ecff',
+      fontSize: '18px',
+      color: '#d5f4ff',
+      align: 'center',
+    }).setOrigin(0.5);
+    this.tooltipText = this.add.text(0, -12, '', {
+      fontFamily: FONT_FAMILY,
+      fontSize: '14px',
+      color: '#9ed3ff',
       align: 'center',
       wordWrap: { width: 240 },
+      lineSpacing: 6,
+    }).setOrigin(0.5, 0);
+    this.tooltip.add([bg, accent, this.tooltipTitle, this.tooltipText]);
+  }
+  private createInfoOverlay(): void {
+    this.infoOverlay = this.add.container(this.scale.width / 2, this.scale.height / 2)
+      .setDepth(160)
+      .setScrollFactor(0)
+      .setVisible(false)
+      .setAlpha(0);
+    this.infoOverlayBg = this.add.rectangle(0, 0, 640, 420, 0x040d18, 0.92)
+      .setOrigin(0.5)
+      .setStrokeStyle(2, 0x1f4a73, 0.85);
+    this.infoOverlayTitle = this.add.text(0, 0, 'Protocol Codex', {
+      fontFamily: FONT_FAMILY,
+      fontSize: '26px',
+      color: '#d5f4ff',
     }).setOrigin(0.5);
-    this.tooltip.add([bg, this.tooltipText]);
+    const body = [
+      'Factions:',
+      '🔥 Thermal Protocol – volatile flares that can shatter Core Process into shards.',
+      '💧 Liquid Node – adaptive currents that clone into micro-droplets.',
+      '🪨 Core Process – stabilising lattice that shields nearby allies.',
+      '',
+      'Synergies:',
+      'Slow + Nuke → Freeze-Explosion to lock sectors before purging.',
+      'Buff + Shield → Resonant Bulwark for sustained pushes.',
+      'Shield + Spawn → Terra Escort to usher new fragments safely.',
+      'Spawn + Buff → Surge Bloom granting instant acceleration.',
+      '',
+      'Controls: Use the status bar to mute, swap palettes, adjust speed, pause or revisit this codex. Hold [Shift] to pin ability dossiers. Press [X] to export a snapshot.',
+    ].join('\n');
+    this.infoOverlayText = this.add.text(0, -120, body, {
+      fontFamily: FONT_FAMILY,
+      fontSize: '15px',
+      color: '#9ed3ff',
+      align: 'left',
+      wordWrap: { width: 520 },
+      lineSpacing: 6,
+    }).setOrigin(0.5, 0);
+    this.infoOverlayFooter = this.add.text(0, 0, 'Press [I] or tap Info to dismiss', {
+      fontFamily: FONT_FAMILY,
+      fontSize: '14px',
+      color: '#6ea6d9',
+    }).setOrigin(0.5);
+    this.infoOverlay.add([this.infoOverlayBg, this.infoOverlayTitle, this.infoOverlayText, this.infoOverlayFooter]);
+    this.layoutInfoOverlay(640, 420);
   }
   private createEndPanel(): void {
     this.endPanel = this.add.container(this.scale.width / 2, this.scale.height / 2)
@@ -293,8 +469,13 @@ Seed: ${summary.seed}`);
     this.tooltipKey = key;
     const worldX = this.abilityBar.x + button.container.x;
     const worldY = this.abilityBar.y + button.container.y;
-    this.tooltip.setPosition(worldX, worldY - 80);
-    this.tooltipText.setText(`${meta.name.toUpperCase()}\n${meta.description}`);
+    this.tooltip.setPosition(worldX, worldY - 100);
+    this.tooltipTitle.setText(meta.name.toUpperCase());
+    const lines: string[] = [meta.description];
+    if (meta.combo) {
+      lines.push(`Synergy: ${meta.combo}`);
+    }
+    this.tooltipText.setText(lines.join('\n\n'));
     this.tooltip.setVisible(this.hudVisible);
     if (!pinned) {
       this.tooltip.setAlpha(1);
@@ -305,13 +486,62 @@ Seed: ${summary.seed}`);
     this.tooltip.setVisible(false);
   }
   private updateSettingsDisplay(): void {
-    const muteLabel = this.muted ? 'Muted' : 'Audio On';
-    const paletteLabel = this.colorblind ? 'Palette: Colorblind' : 'Palette: Default';
-    const hudLabel = this.hudVisible ? 'HUD: Visible' : 'HUD: Hidden';
-    const pausedLabel = this.paused ? 'Status: Paused' : 'Status: Running';
-    this.settingsText.setText(`${muteLabel}
-${paletteLabel}
-${hudLabel}
-${pausedLabel}`);
+    this.updateToggleState('audio', !this.muted, this.muted ? 'Muted' : 'Audio');
+    this.updateToggleState('hud', this.hudVisible, this.hudVisible ? 'HUD On' : 'HUD Off');
+    this.updateToggleState('palette', this.colorblind, this.colorblind ? 'Alt Mode' : 'Default');
+    this.updateToggleState('speed', true, `${this.speedValue.toFixed(1)}x`);
+    this.updateToggleState('pause', !this.paused, this.paused ? 'Paused' : 'Flowing');
+    this.updateToggleState('info', this.infoVisible, this.infoVisible ? 'Info On' : 'Info');
+  }
+
+  private updateToggleState(key: ToggleKey, active: boolean, label: string): void {
+    const toggle = this.statusToggles[key];
+    if (!toggle) return;
+    toggle.label.setText(label);
+    toggle.container.setAlpha(active ? 1 : 0.72);
+    toggle.icon.setAlpha(active ? 1 : 0.7);
+    toggle.label.setColor(active ? '#cfe8ff' : '#7ea6d8');
+  }
+
+  private handleResize(size: Phaser.Structs.Size): void {
+    const { width, height } = size;
+    this.abilityBar.setPosition(width / 2, Math.max(height - 82, 140));
+    this.statusBar.setPosition(width - 234, 42);
+    this.endPanel.setPosition(width / 2, height / 2);
+    this.tooltip.setPosition(Phaser.Math.Clamp(this.tooltip.x, 160, width - 160), this.tooltip.y);
+    this.balanceBar.setPosition(this.hud.x + 36, this.hud.y + 172);
+    const overlayWidth = Phaser.Math.Clamp(width - 160, 480, 760);
+    const overlayHeight = Phaser.Math.Clamp(height - 160, 320, 520);
+    this.infoOverlay.setPosition(width / 2, height / 2);
+    this.layoutInfoOverlay(overlayWidth, overlayHeight);
+  }
+
+  private refreshFactionIcons(palette: Record<FactionId, number>): void {
+    FACTIONS.forEach((faction) => {
+      const display = this.factionDisplays[faction];
+      if (!display) return;
+      const textureKey = this.colorMode === 'alt' ? `${TEXTURE_KEY[faction]}-alt` : TEXTURE_KEY[faction];
+      if (this.textures.exists(textureKey)) {
+        display.icon.setTexture(textureKey);
+      }
+      if (display.glow) {
+        const glowKey = this.colorMode === 'alt' ? `${TEXTURE_KEY[faction]}-alt-glow` : `${TEXTURE_KEY[faction]}-glow`;
+        if (this.textures.exists(glowKey)) {
+          display.glow.setTexture(glowKey);
+        }
+      }
+      display.icon.setTint(palette[faction]);
+    });
+  }
+
+  private layoutInfoOverlay(width: number, height: number): void {
+    if (!this.infoOverlayBg) return;
+    const halfHeight = height / 2;
+    this.infoOverlayBg.setSize(width, height);
+    this.infoOverlayTitle.setPosition(0, -halfHeight + 48);
+    this.infoOverlayText.setPosition(0, -halfHeight + 100);
+    this.infoOverlayText.setWordWrapWidth(width - 160);
+    this.infoOverlayFooter.setPosition(0, halfHeight - 52);
   }
 }
+

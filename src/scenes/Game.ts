@@ -3,20 +3,28 @@ import type { Mode, FactionId } from "../core/types";
 import { FACTIONS, SPEED, TEXTURE_KEY } from "../core/factions";
 import { beats } from "../core/rules";
 import { BalanceMeter, computeEquilibrium, type FactionCounts } from "../systems/balanceMeter";
-import { Interventions, type CooldownState } from "../systems/interventions";
+import { Interventions, type CooldownState, type AbilityKey } from "../systems/interventions";
 import { getPalette } from "../core/palette";
 import { ENTITY_SIZE, BASE_SPEED, GRID_SIZE } from "../core/constants";
 import { initSeed, getSeed, between } from "../utils/rng";
 import { playSfx, setMuted as setMutedAudio } from "../audio";
 import { getBool, setBool, getNumber, setNumber } from "../utils/save";
 import { UI } from "./UI";
-import { burst, pulse } from "../utils/fx";
+import { burst, pulse, shieldFx } from "../utils/fx";
 import type { GameTickPayload, GameEndSummary } from "./types";
 
 type GameInitData = {
   mode?: Mode;
   seed?: string | null;
 };
+
+type ComboContext = {
+  point?: Phaser.Math.Vector2;
+  faction?: FactionId;
+  count?: number;
+};
+
+type UiToggleKey = 'audio' | 'hud' | 'palette' | 'speed' | 'pause' | 'info';
 
 const MUTED_KEY = "muted";
 const COLORBLIND_KEY = "colorblind";
@@ -29,6 +37,20 @@ const EQUILIBRIUM_WINDOW = 60;
 const SPAWN_COUNT = 60;
 const ENTITY_CAP = 600;
 const WORLD_PADDING = 48;
+const INTERACTION_COOLDOWN_ATTACKER = 1400;
+const INTERACTION_COOLDOWN_DEFENDER = 900;
+const EARTH_FRAGMENT_CHANCE = 0.55;
+const WATER_DUPLICATION_CHANCE = 0.5;
+const COMBO_DEFINITIONS = [
+  { sequence: ['2', '5'] as const, window: 4000, effect: 'freezeExplosion' as const },
+  { sequence: ['3', '4'] as const, window: 3500, effect: 'resonantBulwark' as const },
+  { sequence: ['4', '1'] as const, window: 4000, effect: 'terraEscort' as const },
+  { sequence: ['1', '3'] as const, window: 3200, effect: 'surgeBloom' as const },
+] as const;
+type ComboEffect = (typeof COMBO_DEFINITIONS)[number]['effect'];
+
+const BACKGROUND_UNSTABLE = Phaser.Display.Color.ValueToColor(0xff6347);
+const BACKGROUND_STABLE = Phaser.Display.Color.ValueToColor(0x55e6a5);
 
 export class Game extends Phaser.Scene {
   private mode: Mode = "Balance";
@@ -38,6 +60,7 @@ export class Game extends Phaser.Scene {
   private interventions!: Interventions;
   private ui!: UI;
   private uiReady = false;
+  private uiEventsBound = false;
   private pendingEnd: GameEndSummary | null = null;
   private lastPayload: GameTickPayload | null = null;
 
@@ -51,13 +74,23 @@ export class Game extends Phaser.Scene {
   private hudVisible = true;
   private colorblind = false;
   private muted = true;
+  private infoOverlayVisible = false;
 
   private equilibriumStable = 0;
   private nukeUsed = false;
   private interventionsUsed = 0;
+  private comboTriggers = 0;
+  private fireSplits = 0;
+  private waterDuplications = 0;
+  private earthShieldBursts = 0;
 
   private pendingSeed: string | null = null;
   private scanlineOverlay?: Phaser.GameObjects.TileSprite;
+  private backgroundGrid?: Phaser.GameObjects.Grid;
+  private speedLevels: number[] = [0.6, 0.85, 1.1];
+  private speedIndex = 1;
+  private currentSpeed = 1;
+  private comboHistory: Array<{ key: AbilityKey; time: number; data?: ComboContext }> = [];
   private readonly handleEntityCreated = (sprite: Phaser.Physics.Arcade.Image, faction: FactionId) => {
     this.decorateFactionSprite(sprite, faction, true);
   };
@@ -79,6 +112,7 @@ export class Game extends Phaser.Scene {
     this.resetState();
     this.initializeSettings();
     this.createBackground();
+    this.animateBackground(1);
 
     this.physics.world.setBounds(0, 0, this.scale.width, this.scale.height);
     this.physics.world.setBoundsCollision(true, true, true, true);
@@ -105,10 +139,10 @@ export class Game extends Phaser.Scene {
   private createBackground(): void {
     const width = this.scale.width;
     const height = this.scale.height;
-    const grid = this.add.grid(width / 2, height / 2, width, height, GRID_SIZE, GRID_SIZE, 0x0a1526, 0.24, 0x12233b, 0.32)
+    this.backgroundGrid = this.add.grid(width / 2, height / 2, width, height, GRID_SIZE, GRID_SIZE, 0x0a1526, 0.24, 0x12233b, 0.32)
       .setDepth(-20)
       .setScrollFactor(0);
-    grid.setStrokeStyle(1, 0x1a2b3f, 0.25);
+    this.backgroundGrid.setStrokeStyle(1, 0x1a2b3f, 0.25);
     this.scanlineOverlay = this.add.tileSprite(width / 2, height / 2, width, height, 'overlay-scanline')
       .setScrollFactor(0)
       .setDepth(35)
@@ -130,9 +164,12 @@ export class Game extends Phaser.Scene {
 
   private onUiReady(): void {
     this.uiReady = true;
+    this.bindUiEvents();
     this.ui.setMode(this.mode);
     this.ui.setHudVisible(this.hudVisible);
     this.ui.setMutedAndColorblind(this.muted, this.colorblind);
+    this.ui.setSpeedMultiplier(this.currentSpeed);
+    this.ui.setInfoVisible(this.infoOverlayVisible);
     this.ui.hideEndPanel();
     if (this.lastPayload) {
       this.ui.tick(this.lastPayload);
@@ -141,6 +178,67 @@ export class Game extends Phaser.Scene {
     if (this.pendingEnd) {
       this.ui.showEndPanel(this.pendingEnd);
       this.pendingEnd = null;
+    }
+  }
+
+  private bindUiEvents(): void {
+    if (this.uiEventsBound) return;
+    this.ui.events.on('ability-clicked', this.handleUiAbilityClick, this);
+    this.ui.events.on('status-toggle', this.handleStatusToggle, this);
+    this.uiEventsBound = true;
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      if (this.ui) {
+        this.ui.events.off('ability-clicked', this.handleUiAbilityClick, this);
+        this.ui.events.off('status-toggle', this.handleStatusToggle, this);
+      }
+      this.uiEventsBound = false;
+    });
+  }
+
+  private handleUiAbilityClick(key: AbilityKey): void {
+    switch (key) {
+      case '1':
+        this.trySpawnAt(this.pointerWorld());
+        break;
+      case '2':
+        this.trySlowStrongest();
+        break;
+      case '3':
+        this.tryBuffWeakest();
+        break;
+      case '4':
+        this.tryShieldWeakest();
+        break;
+      case '5':
+        this.tryNukeAt(this.pointerWorld());
+        break;
+      default:
+        break;
+    }
+  }
+
+  private handleStatusToggle(key: UiToggleKey): void {
+    switch (key) {
+      case 'audio':
+        this.toggleMute();
+        break;
+      case 'hud':
+        this.toggleHud();
+        break;
+      case 'palette':
+        this.toggleColorblind();
+        break;
+      case 'speed':
+        this.cycleSpeed();
+        break;
+      case 'pause':
+        this.togglePause();
+        break;
+      case 'info':
+        this.toggleInfoOverlay();
+        break;
+      default:
+        break;
     }
   }
 
@@ -162,8 +260,11 @@ export class Game extends Phaser.Scene {
       this.applyFactionBehaviours(dt);
       this.checkEndConditions(counts, equilibrium);
       this.publishTick(counts, equilibrium);
+      this.animateBackground(equilibrium);
     } else {
-      this.publishTick(this.counts, computeEquilibrium(this.counts));
+      const equilibrium = computeEquilibrium(this.counts);
+      this.publishTick(this.counts, equilibrium);
+      this.animateBackground(equilibrium);
     }
     this.updateCooldowns();
   }
@@ -183,15 +284,23 @@ export class Game extends Phaser.Scene {
     this.paused = false;
     this.ended = false;
     this.uiReady = false;
+    this.uiEventsBound = false;
     this.equilibriumStable = 0;
     this.nukeUsed = false;
     this.interventionsUsed = 0;
+    this.comboTriggers = 0;
+    this.fireSplits = 0;
+    this.waterDuplications = 0;
+    this.earthShieldBursts = 0;
+    this.comboHistory = [];
+    this.infoOverlayVisible = false;
     this.cooldowns = { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0 };
     this.counts = { Fire: 0, Water: 0, Earth: 0 };
     this.pendingEnd = null;
     this.lastPayload = null;
     this.physics.world.resume();
-    this.time.timeScale = 1;
+    this.speedIndex = 1;
+    this.applySpeed(this.getCurrentSpeed());
   }
 
   private initializeSettings(): void {
@@ -227,6 +336,9 @@ export class Game extends Phaser.Scene {
 
   private spawnInitial(total: number): void {
     for (let i = 0; i < total; i += 1) {
+      if (!this.canSpawnAdditional(1)) {
+        break;
+      }
       const faction = FACTIONS[i % FACTIONS.length]!;
       const x = between(WORLD_PADDING, this.scale.width - WORLD_PADDING);
       const y = between(WORLD_PADDING, this.scale.height - WORLD_PADDING);
@@ -265,8 +377,10 @@ export class Game extends Phaser.Scene {
       return;
     }
     if (beats(factionA, factionB)) {
+      this.resolveElementalInteraction(spriteA, spriteB, factionA, factionB);
       this.convert(spriteB, factionA);
     } else if (beats(factionB, factionA)) {
+      this.resolveElementalInteraction(spriteB, spriteA, factionB, factionA);
       this.convert(spriteA, factionB);
     }
   };
@@ -318,6 +432,8 @@ export class Game extends Phaser.Scene {
     keyboard.on("keydown-C", () => this.toggleColorblind());
     keyboard.on("keydown-H", () => this.toggleHud());
     keyboard.on("keydown-SPACE", () => this.togglePause());
+    keyboard.on("keydown-I", () => this.toggleInfoOverlay());
+    keyboard.on("keydown-X", () => this.exportSnapshot());
     keyboard.on("keydown-R", (event: KeyboardEvent) => this.restart(event.shiftKey));
     keyboard.on("keydown-TAB", (event: KeyboardEvent) => {
       event.preventDefault();
@@ -327,35 +443,44 @@ export class Game extends Phaser.Scene {
 
   private trySpawnAt(point: Phaser.Math.Vector2): void {
     if (!this.canAct()) return;
+    const faction = this.meter.weakest();
     const success = this.interventions.spawnWeakest(point);
     if (success) {
       this.interventionsUsed += 1;
       playSfx('spawn');
+      this.registerAbilityUse('1', { point: point.clone(), faction });
       this.refreshAndPublish();
     }
   }
 
   private trySlowStrongest(): void {
     if (!this.canAct()) return;
+    const faction = this.meter.strongest();
     if (this.interventions.slowStrongest()) {
       this.interventionsUsed += 1;
       playSfx('slow');
+      this.registerAbilityUse('2', { faction });
     }
   }
 
   private tryBuffWeakest(): void {
     if (!this.canAct()) return;
+    const faction = this.meter.weakest();
     if (this.interventions.buffWeakest()) {
       this.interventionsUsed += 1;
       playSfx('buff');
+      this.registerAbilityUse('3', { faction });
     }
   }
 
   private tryShieldWeakest(): void {
     if (!this.canAct()) return;
+    const faction = this.meter.weakest();
     if (this.interventions.shieldWeakest()) {
       this.interventionsUsed += 1;
       playSfx('shield');
+      const count = this.groups[faction].countActive(true);
+      this.registerAbilityUse('4', { faction, count });
       this.refreshAndPublish();
     }
   }
@@ -367,8 +492,381 @@ export class Game extends Phaser.Scene {
       this.interventionsUsed += 1;
       this.nukeUsed = true;
       playSfx('nuke');
+      this.registerAbilityUse('5', { point: point.clone() });
       this.refreshAndPublish();
     }
+  }
+
+  private registerAbilityUse(key: AbilityKey, context: ComboContext = {}): void {
+    const now = this.time.now;
+    this.comboHistory = this.comboHistory.filter((entry) => now - entry.time <= 4500);
+    this.comboHistory.push({ key, time: now, data: context });
+    this.evaluateCombos(key, context, now);
+  }
+
+  private evaluateCombos(key: AbilityKey, context: ComboContext, timestamp: number): void {
+    COMBO_DEFINITIONS.forEach(({ sequence, window, effect }) => {
+      const [first, second] = sequence;
+      if (key !== second) return;
+      const candidate = [...this.comboHistory]
+        .reverse()
+        .find((entry) => entry.key === first && timestamp - entry.time <= window);
+      if (!candidate) return;
+      this.comboHistory = this.comboHistory.filter((entry) => entry !== candidate);
+      this.triggerCombo(effect, candidate.data ?? {}, context);
+      this.comboTriggers += 1;
+    });
+  }
+
+  private triggerCombo(effect: ComboEffect, first: ComboContext, second: ComboContext): void {
+    switch (effect) {
+      case 'freezeExplosion':
+        this.comboFreezeExplosion(second.point ?? first.point ?? this.pointerWorld());
+        break;
+      case 'resonantBulwark':
+        this.comboResonantBulwark(second.faction ?? first.faction ?? this.meter.weakest());
+        break;
+      case 'terraEscort':
+        this.comboTerraEscort(second.point ?? first.point ?? this.pointerWorld(), second.faction ?? first.faction ?? this.meter.weakest());
+        break;
+      case 'surgeBloom':
+        if (first.point && (second.faction ?? first.faction)) {
+          this.comboSurgeBloom(first.point, second.faction ?? first.faction!);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  private resolveElementalInteraction(
+    attacker: Phaser.Physics.Arcade.Image,
+    defender: Phaser.Physics.Arcade.Image,
+    attackerFaction: FactionId,
+    defenderFaction: FactionId,
+  ): void {
+    if (!this.canTriggerInteraction(attacker, defender)) {
+      return;
+    }
+    const impact = new Phaser.Math.Vector2(defender.x, defender.y);
+    if (
+      attackerFaction === 'Fire' &&
+      defenderFaction === 'Earth' &&
+      this.canSpawnAdditional(1) &&
+      Phaser.Math.FloatBetween(0, 1) < EARTH_FRAGMENT_CHANCE
+    ) {
+      this.fireSplits += this.spawnEarthFragments(impact);
+    } else if (
+      attackerFaction === 'Water' &&
+      defenderFaction === 'Fire' &&
+      this.canSpawnAdditional(1) &&
+      Phaser.Math.FloatBetween(0, 1) < WATER_DUPLICATION_CHANCE
+    ) {
+      this.waterDuplications += this.spawnWaterDroplets(attacker, impact);
+    } else if (attackerFaction === 'Earth' && defenderFaction === 'Water') {
+      this.earthShieldBursts += 1;
+      this.applyEarthShield(attacker);
+    }
+    if (Phaser.Math.FloatBetween(0, 1) < 0.05) {
+      this.triggerCritical(attackerFaction, impact);
+    }
+  }
+
+  private canTriggerInteraction(attacker: Phaser.Physics.Arcade.Image, defender: Phaser.Physics.Arcade.Image): boolean {
+    const now = this.time.now;
+    const attackerReady = (attacker.getData('nextInteraction') as number | undefined) ?? 0;
+    const defenderGuarded = (defender.getData('interactionGuard') as number | undefined) ?? 0;
+    if (now < attackerReady || now < defenderGuarded) {
+      return false;
+    }
+    attacker.setData('nextInteraction', now + INTERACTION_COOLDOWN_ATTACKER);
+    defender.setData('interactionGuard', now + INTERACTION_COOLDOWN_DEFENDER);
+    return true;
+  }
+
+  private comboFreezeExplosion(point: Phaser.Math.Vector2): void {
+    const radius = 140;
+    const radiusSq = radius * radius;
+    const affected: Phaser.Physics.Arcade.Image[] = [];
+    this.forEachSprite((sprite) => {
+      const dx = sprite.x - point.x;
+      const dy = sprite.y - point.y;
+      if (dx * dx + dy * dy <= radiusSq) {
+        affected.push(sprite);
+        const body = sprite.body as Phaser.Physics.Arcade.Body | null;
+        if (body) {
+          body.velocity.scale(0.2);
+        }
+        sprite.setTintFill(0xb2d7ff);
+        this.tweens.add({
+          targets: sprite,
+          alpha: { from: sprite.alpha, to: 0.55 },
+          yoyo: true,
+          duration: 120,
+          repeat: 6,
+        });
+      }
+    });
+    burst(this, point.x, point.y, 0xb2d7ff, 'large');
+    this.time.delayedCall(1600, () => {
+      affected.forEach((sprite) => {
+        if (!sprite.active) return;
+        const faction = sprite.getData('faction') as FactionId | undefined;
+        if (faction) {
+          sprite.setTint(this.palette[faction]);
+        } else {
+          sprite.clearTint();
+        }
+        this.maintainBaseSpeed(sprite, 0.6);
+      });
+    });
+  }
+
+  private comboResonantBulwark(faction: FactionId): void {
+    const sprites = this.groups[faction].getChildren() as Phaser.Physics.Arcade.Image[];
+    sprites.forEach((sprite) => {
+      sprite.setData('shielded', true);
+    });
+    shieldFx(this, sprites, 4800);
+    this.time.delayedCall(4800, () => {
+      sprites.forEach((sprite) => {
+        if (!sprite.active) return;
+        sprite.setData('shielded', false);
+      });
+    });
+  }
+
+  private comboTerraEscort(point: Phaser.Math.Vector2, faction: FactionId): void {
+    const count = 2;
+    for (let i = 0; i < count; i += 1) {
+      if (!this.canSpawnAdditional(1)) {
+        break;
+      }
+      const angle = (Math.PI * 2 * i) / count;
+      const offset = new Phaser.Math.Vector2().setToPolar(angle, 40);
+      const sprite = this.spawnEntity(faction, Phaser.Math.Clamp(point.x + offset.x, WORLD_PADDING, this.scale.width - WORLD_PADDING), Phaser.Math.Clamp(point.y + offset.y, WORLD_PADDING, this.scale.height - WORLD_PADDING));
+      sprite.setData('shielded', true);
+      shieldFx(this, [sprite], 2600);
+      this.time.delayedCall(2600, () => {
+        if (sprite.active) sprite.setData('shielded', false);
+      });
+    }
+  }
+
+  private comboSurgeBloom(origin: Phaser.Math.Vector2, faction: FactionId): void {
+    const radius = 160;
+    const radiusSq = radius * radius;
+    const now = this.time.now;
+    const sprites = this.groups[faction].getChildren() as Phaser.Physics.Arcade.Image[];
+    sprites.forEach((sprite) => {
+      const spawnTime = (sprite.getData('spawnTime') as number) ?? 0;
+      if (now - spawnTime > 3000) return;
+      const dx = sprite.x - origin.x;
+      const dy = sprite.y - origin.y;
+      if (dx * dx + dy * dy > radiusSq) return;
+      const body = sprite.body as Phaser.Physics.Arcade.Body | null;
+      if (body) {
+        body.velocity.scale(1.35);
+      }
+      this.tweens.add({
+        targets: sprite,
+        scale: { from: sprite.scale, to: sprite.scale * 1.2 },
+        yoyo: true,
+        duration: 180,
+      });
+    });
+    burst(this, origin.x, origin.y, this.palette[faction], 'medium');
+  }
+
+  private spawnEarthFragments(origin: Phaser.Math.Vector2): number {
+    if (!this.canSpawnAdditional(1)) {
+      return 0;
+    }
+    const fragments = Phaser.Math.Between(1, 2);
+    let spawned = 0;
+    for (let i = 0; i < fragments; i += 1) {
+      if (!this.canSpawnAdditional(1)) {
+        break;
+      }
+      const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+      const distance = Phaser.Math.FloatBetween(12, 30);
+      const offset = new Phaser.Math.Vector2().setToPolar(angle, distance);
+      const x = Phaser.Math.Clamp(origin.x + offset.x, WORLD_PADDING, this.scale.width - WORLD_PADDING);
+      const y = Phaser.Math.Clamp(origin.y + offset.y, WORLD_PADDING, this.scale.height - WORLD_PADDING);
+      const sprite = this.spawnEntity('Earth', x, y);
+      sprite.setDisplaySize(ENTITY_SIZE * 0.85, ENTITY_SIZE * 0.85);
+      sprite.setAlpha(0.9);
+      sprite.setData('fragment', true);
+      sprite.setData('baseSpeed', SPEED.Earth * BASE_SPEED * 0.85);
+      const body = sprite.body as Phaser.Physics.Arcade.Body | null;
+      if (body) {
+        const radius = sprite.displayWidth * 0.45;
+        body.setCircle(radius, (sprite.displayWidth - radius * 2) / 2, (sprite.displayHeight - radius * 2) / 2);
+        const fragmentSpeed = (sprite.getData('baseSpeed') as number) * 0.9;
+        body.maxVelocity.set(fragmentSpeed * 1.25, fragmentSpeed * 1.25);
+        body.velocity.setLength(fragmentSpeed);
+        body.velocity.rotate(Phaser.Math.FloatBetween(-0.6, 0.6));
+      }
+      this.tweens.add({
+        targets: sprite,
+        scaleX: { from: 0.5, to: 1 },
+        scaleY: { from: 0.5, to: 1 },
+        duration: 200,
+        ease: Phaser.Math.Easing.Sine.Out,
+      });
+      this.time.delayedCall(6000, () => {
+        if (!sprite.active) return;
+        burst(this, sprite.x, sprite.y, this.palette.Earth, 'small');
+        sprite.destroy();
+      });
+      spawned += 1;
+    }
+    return spawned;
+  }
+
+  private spawnWaterDroplets(attacker: Phaser.Physics.Arcade.Image, origin: Phaser.Math.Vector2): number {
+    if (!this.canSpawnAdditional(1)) {
+      return 0;
+    }
+    let spawned = 0;
+    const droplets = 1 + (this.canSpawnAdditional(1) && Phaser.Math.FloatBetween(0, 1) < 0.35 ? 1 : 0);
+    for (let i = 0; i < droplets; i += 1) {
+      if (!this.canSpawnAdditional(1)) {
+        break;
+      }
+      const offset = new Phaser.Math.Vector2().setToPolar(
+        Phaser.Math.FloatBetween(0, Math.PI * 2),
+        Phaser.Math.FloatBetween(10, 26),
+      );
+      const x = Phaser.Math.Clamp(origin.x + offset.x, WORLD_PADDING, this.scale.width - WORLD_PADDING);
+      const y = Phaser.Math.Clamp(origin.y + offset.y, WORLD_PADDING, this.scale.height - WORLD_PADDING);
+      const sprite = this.spawnEntity('Water', x, y);
+      sprite.setAlpha(0.85);
+      const body = sprite.body as Phaser.Physics.Arcade.Body | null;
+      if (body) {
+        const direction = new Phaser.Math.Vector2(attacker.x - x, attacker.y - y).normalize();
+        body.velocity.add(direction.scale(60));
+      }
+      spawned += 1;
+    }
+    return spawned;
+  }
+
+  private applyEarthShield(anchor: Phaser.Physics.Arcade.Image): void {
+    const radius = 160;
+    const radiusSq = radius * radius;
+    const sprites = this.groups.Earth.getChildren() as Phaser.Physics.Arcade.Image[];
+    const targets = sprites.filter((sprite) => sprite.active && (sprite.x - anchor.x) ** 2 + (sprite.y - anchor.y) ** 2 <= radiusSq);
+    if (!targets.length) return;
+    targets.forEach((sprite) => sprite.setData('shielded', true));
+    shieldFx(this, targets, 2800);
+    this.time.delayedCall(2800, () => {
+      targets.forEach((sprite) => {
+        if (sprite.active) sprite.setData('shielded', false);
+      });
+    });
+  }
+
+  private triggerCritical(faction: FactionId, point: Phaser.Math.Vector2): void {
+    switch (faction) {
+      case 'Fire':
+        this.fireCritical(point);
+        break;
+      case 'Water':
+        this.waterCritical(point);
+        break;
+      case 'Earth':
+        this.earthCritical(point);
+        break;
+      default:
+        break;
+    }
+  }
+
+  private fireCritical(point: Phaser.Math.Vector2): void {
+    const radius = 90;
+    const radiusSq = radius * radius;
+    const earth = this.groups.Earth.getChildren() as Phaser.Physics.Arcade.Image[];
+    const targets = earth
+      .filter((sprite) => sprite.active && (sprite.x - point.x) ** 2 + (sprite.y - point.y) ** 2 <= radiusSq)
+      .slice(0, 2);
+    targets.forEach((sprite) => this.convert(sprite, 'Fire'));
+    if (targets.length > 0) {
+      burst(this, point.x, point.y, this.palette.Fire, 'medium');
+    }
+  }
+
+  private waterCritical(point: Phaser.Math.Vector2): void {
+    const radius = 140;
+    const radiusSq = radius * radius;
+    const fire = this.groups.Fire.getChildren() as Phaser.Physics.Arcade.Image[];
+    fire.forEach((sprite) => {
+      if (!sprite.active) return;
+      const dx = sprite.x - point.x;
+      const dy = sprite.y - point.y;
+      if (dx * dx + dy * dy > radiusSq) return;
+      const body = sprite.body as Phaser.Physics.Arcade.Body | null;
+      if (body) {
+        body.velocity.scale(0.6);
+      }
+      sprite.setAlpha(0.75);
+      this.tweens.add({
+        targets: sprite,
+        alpha: { from: 0.75, to: 1 },
+        duration: 520,
+      });
+    });
+    burst(this, point.x, point.y, this.palette.Water, 'small');
+  }
+
+  private earthCritical(point: Phaser.Math.Vector2): void {
+    const radius = 160;
+    const radiusSq = radius * radius;
+    const targets: Phaser.Physics.Arcade.Image[] = [];
+    const earthSprites = this.groups.Earth.getChildren() as Phaser.Physics.Arcade.Image[];
+    earthSprites.forEach((sprite) => {
+      if (!sprite.active) return;
+      const dx = sprite.x - point.x;
+      const dy = sprite.y - point.y;
+      if (dx * dx + dy * dy <= radiusSq) {
+        sprite.setData('shielded', true);
+        targets.push(sprite);
+      }
+    });
+    if (!targets.length) return;
+    shieldFx(this, targets, 2400);
+    this.time.delayedCall(2400, () => {
+      targets.forEach((sprite) => {
+        if (sprite.active) sprite.setData('shielded', false);
+      });
+    });
+  }
+
+  private forEachSprite(callback: (sprite: Phaser.Physics.Arcade.Image, faction: FactionId) => void): void {
+    FACTIONS.forEach((faction) => {
+      const children = this.groups[faction].getChildren() as Phaser.Physics.Arcade.Image[];
+      children.forEach((sprite) => {
+        if (!sprite.active) return;
+        callback(sprite, faction);
+      });
+    });
+  }
+
+  private animateBackground(equilibrium: number): void {
+    if (!this.backgroundGrid) return;
+    const stability = Phaser.Math.Clamp(equilibrium, 0, 1);
+    const blend = Phaser.Display.Color.Interpolate.ColorWithColor(
+      BACKGROUND_UNSTABLE,
+      BACKGROUND_STABLE,
+      100,
+      Math.floor(stability * 100),
+    );
+    const tint = Phaser.Display.Color.GetColor(blend.r, blend.g, blend.b);
+    const fillAlpha = 0.18 + stability * 0.14;
+    const outlineAlpha = 0.22 + stability * 0.18;
+    this.backgroundGrid.setFillStyle(tint, fillAlpha);
+    this.backgroundGrid.setOutlineStyle(tint, outlineAlpha);
+    this.backgroundGrid.setAlpha(fillAlpha);
   }
 
   private toggleMute(): void {
@@ -400,17 +898,92 @@ export class Game extends Phaser.Scene {
     if (this.uiReady) {
       this.ui.setHudVisible(this.hudVisible);
     }
+    if (!this.hudVisible && this.infoOverlayVisible) {
+      this.infoOverlayVisible = false;
+      if (this.uiReady) {
+        this.ui.setInfoVisible(false);
+      }
+    }
   }
 
   private togglePause(): void {
     this.paused = !this.paused;
     this.physics.world.isPaused = this.paused;
-    this.time.timeScale = this.paused ? 0 : 1;
+    this.applySpeed(this.currentSpeed);
     this.refreshAndPublish();
   }
 
   private canAct(): boolean {
     return !this.ended && !this.paused;
+  }
+
+  private applySpeed(multiplier: number): void {
+    this.currentSpeed = multiplier;
+    const target = this.paused ? 0 : multiplier;
+    this.time.timeScale = target;
+    this.physics.world.timeScale = target;
+    if (this.uiReady) {
+      this.ui.setSpeedMultiplier(multiplier);
+    }
+  }
+
+  private cycleSpeed(): void {
+    this.speedIndex = (this.speedIndex + 1) % this.speedLevels.length;
+    this.applySpeed(this.getCurrentSpeed());
+  }
+
+  private getCurrentSpeed(): number {
+    if (this.speedLevels.length === 0) {
+      return 1;
+    }
+    const clampedIndex = Phaser.Math.Clamp(this.speedIndex, 0, this.speedLevels.length - 1);
+    const preferredIndex = Math.min(1, this.speedLevels.length - 1);
+    return (
+      this.speedLevels[clampedIndex]
+      ?? this.speedLevels[preferredIndex]
+      ?? this.speedLevels[0]
+      ?? 1
+    );
+  }
+
+  private toggleInfoOverlay(): void {
+    this.infoOverlayVisible = !this.infoOverlayVisible;
+    if (this.uiReady) {
+      this.ui.setInfoVisible(this.infoOverlayVisible);
+    }
+  }
+
+  private exportSnapshot(): void {
+    if (typeof document === 'undefined') return;
+    const entities: Array<{ faction: FactionId; x: number; y: number; vx: number; vy: number; shielded: boolean }> = [];
+    this.forEachSprite((sprite, faction) => {
+      const body = sprite.body as Phaser.Physics.Arcade.Body | null;
+      const velocity = body ? { vx: body.velocity.x, vy: body.velocity.y } : { vx: 0, vy: 0 };
+      entities.push({ faction, x: sprite.x, y: sprite.y, ...velocity, shielded: !!sprite.getData('shielded') });
+    });
+    const payload = {
+      mode: this.mode,
+      elapsed: this.elapsed,
+      seed: this.seed,
+      counts: this.counts,
+      stats: {
+        comboTriggers: this.comboTriggers,
+        fireSplits: this.fireSplits,
+        waterDuplications: this.waterDuplications,
+        earthShieldBursts: this.earthShieldBursts,
+      },
+      entities,
+    };
+    const json = JSON.stringify(payload, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `4ttp-snapshot-${Date.now()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   }
 
   private pointerWorld(pointer?: Phaser.Input.Pointer): Phaser.Math.Vector2 {
@@ -444,6 +1017,12 @@ export class Game extends Phaser.Scene {
     this.paused = true;
     this.physics.world.pause();
     this.time.timeScale = 0;
+    if (this.infoOverlayVisible) {
+      this.infoOverlayVisible = false;
+      if (this.uiReady) {
+        this.ui.setInfoVisible(false);
+      }
+    }
 
     const achievements = this.collectAchievements();
     const bestScore = this.updateBestScore(this.elapsed);
@@ -467,10 +1046,14 @@ export class Game extends Phaser.Scene {
 
   private collectAchievements(): string[] {
     const achievements: string[] = [];
-    if (this.equilibriumStable >= EQUILIBRIUM_WINDOW) achievements.push("EquilibriumKeeper");
-    if (!this.nukeUsed) achievements.push("Merciful");
-    if (this.interventionsUsed <= 5) achievements.push("Minimalist");
-    if (this.mode === "Domination" && this.elapsed < 120) achievements.push("SwiftDominion");
+    if (this.equilibriumStable >= EQUILIBRIUM_WINDOW) achievements.push("Equilibrium Master");
+    if (this.fireSplits >= 6) achievements.push("Thermal Overlord");
+    if (this.waterDuplications >= 5) achievements.push("Liquid Echoist");
+    if (this.earthShieldBursts >= 4) achievements.push("Core Sentinel");
+    if (this.comboTriggers >= 3) achievements.push("Synergy Engineer");
+    if (!this.nukeUsed) achievements.push("Pacifist Protocol");
+    if (this.interventionsUsed <= 5) achievements.push("Silent Operator");
+    if (this.mode === "Domination" && this.elapsed < 120) achievements.push("Domination Blitz");
     return achievements;
   }
 
@@ -494,16 +1077,40 @@ export class Game extends Phaser.Scene {
   }
 
   private decorateFactionSprite(sprite: Phaser.Physics.Arcade.Image, faction: FactionId, fresh: boolean): void {
-    sprite.setTexture(TEXTURE_KEY[faction]);
+    const baseKey = TEXTURE_KEY[faction];
+    const variantKey = this.colorblind ? `${baseKey}-alt` : baseKey;
+    const textureKey = this.textures.exists(variantKey) ? variantKey : baseKey;
+    sprite.setTexture(textureKey);
     sprite.setDisplaySize(ENTITY_SIZE, ENTITY_SIZE);
     sprite.setOrigin(0.5, 0.5);
     sprite.setTint(this.palette[faction]);
     if (fresh) {
       sprite.setAlpha(Phaser.Math.FloatBetween(0.82, 1));
+      sprite.setData('spawnTime', this.time.now);
+      this.tweens.add({
+        targets: sprite,
+        scale: { from: 0.6, to: 1 },
+        duration: 220,
+        ease: Phaser.Math.Easing.Back.Out,
+      });
+    }
+    const now = this.time.now;
+    const existingNext = (sprite.getData('nextInteraction') as number | undefined) ?? 0;
+    const existingGuard = (sprite.getData('interactionGuard') as number | undefined) ?? 0;
+    if (fresh) {
+      sprite.setData('nextInteraction', Math.max(now + 320, existingNext));
+      sprite.setData('interactionGuard', Math.max(now + 200, existingGuard));
+    } else {
+      sprite.setData('nextInteraction', Math.max(now + 240, existingNext));
+      sprite.setData('interactionGuard', Math.max(now + 160, existingGuard));
     }
     sprite.setData('baseSpeed', SPEED[faction] * BASE_SPEED);
     if (faction === 'Water' && typeof sprite.getData('wavePhase') !== 'number') {
       sprite.setData('wavePhase', Phaser.Math.FloatBetween(0, Math.PI * 2));
+    }
+    if (sprite.preFX) {
+      sprite.preFX.clear();
+      sprite.preFX.addGlow(this.palette[faction], 2.2, 0, false, 0.1, 6);
     }
     const body = sprite.body as Phaser.Physics.Arcade.Body | null;
     if (body) {
@@ -586,7 +1193,7 @@ export class Game extends Phaser.Scene {
     if (!sprite.active) return;
     const body = sprite.body as Phaser.Physics.Arcade.Body | null;
     if (!body) return;
-    const jitter = 45;
+    const jitter = 32;
     body.velocity.x += Phaser.Math.FloatBetween(-jitter, jitter) * dt;
     body.velocity.y += Phaser.Math.FloatBetween(-jitter, jitter) * dt;
     this.maintainBaseSpeed(sprite, 0.25);
@@ -600,7 +1207,7 @@ export class Game extends Phaser.Scene {
     if (typeof phase !== 'number') {
       phase = Phaser.Math.FloatBetween(0, Math.PI * 2);
     }
-    phase += dt * 3.2;
+    phase += dt * 2.4;
     sprite.setData('wavePhase', phase);
     body.velocity.rotate(Math.sin(phase) * 0.05);
     this.maintainBaseSpeed(sprite, 0.08);
@@ -626,6 +1233,17 @@ export class Game extends Phaser.Scene {
     }
     const newLength = Phaser.Math.Linear(current, baseSpeed, lerp);
     body.velocity.setLength(newLength);
+  }
+
+  private totalActiveEntities(): number {
+    return (Object.values(this.groups) as Phaser.Physics.Arcade.Group[]).reduce(
+      (sum, group) => sum + group.countActive(true),
+      0,
+    );
+  }
+
+  private canSpawnAdditional(amount: number): boolean {
+    return this.totalActiveEntities() + amount <= ENTITY_CAP;
   }
 
   private refreshAndPublish(): void {
