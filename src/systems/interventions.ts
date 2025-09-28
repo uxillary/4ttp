@@ -26,13 +26,45 @@ const NUKE_TINT = 0xb2d7ff;
 const NUKE_RADIUS = 80;
 const NUKE_LIMIT = 6;
 
+type AbilityMetaEntry = {
+  name: string;
+  description: string;
+  hint: string;
+  combo?: string;
+};
+
 export const ABILITY_METADATA = {
-  '1': { name: 'Spawn', description: 'Adds one entity of the weakest faction at the cursor.' },
-  '2': { name: 'Slow', description: 'Reduces the strongest faction speed to 75% for 5s.' },
-  '3': { name: 'Buff', description: 'Boosts the weakest faction speed to 125% for 5s.' },
-  '4': { name: 'Shield', description: 'Grants 3s invulnerability to the weakest faction.' },
-  '5': { name: 'Nuke', description: 'Removes up to six nearby entities within 80px.' },
-} as const satisfies Record<AbilityKey, { name: string; description: string }>;
+  '1': {
+    name: 'Spawn',
+    description: 'Adds one entity of the weakest faction at the cursor.',
+    hint: 'Pulse a reinforcements node where balance breaks.',
+    combo: 'Spawn → Buff supercharges new arrivals.',
+  },
+  '2': {
+    name: 'Slow',
+    description: 'Reduces the strongest faction speed to 75% for 5s.',
+    hint: 'Throttle surging swarms to regain parity.',
+    combo: 'Slow → Nuke triggers a freeze-explosion.',
+  },
+  '3': {
+    name: 'Buff',
+    description: 'Boosts the weakest faction speed to 125% for 5s.',
+    hint: 'Overclock allies to contest momentum.',
+    combo: 'Buff → Shield yields a resonant bulwark.',
+  },
+  '4': {
+    name: 'Shield',
+    description: 'Grants 3s invulnerability to the weakest faction.',
+    hint: 'Phase vulnerable squads through enemy bursts.',
+    combo: 'Shield → Spawn escorts new fragments safely.',
+  },
+  '5': {
+    name: 'Nuke',
+    description: 'Removes up to six nearby entities within 80px.',
+    hint: 'Purge critical overloads before collapse.',
+    combo: 'Slow prep before Nuke amplifies the blast radius.',
+  },
+} as const satisfies Record<AbilityKey, AbilityMetaEntry>;
 
 export type CooldownState = Record<AbilityKey, number>;
 
