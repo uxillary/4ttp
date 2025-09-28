@@ -151,4 +151,8 @@ export class BalanceBar {
   setPosition(x: number, y: number): void {
     this.graphics.setPosition(x, y);
   }
+
+  setScale(x: number, y?: number): void {
+    this.graphics.setScale(x, y ?? x);
+  }
 }

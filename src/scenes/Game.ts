@@ -3,9 +3,13 @@ import type { Mode, FactionId } from "../core/types";
 import { FACTIONS, SPEED, TEXTURE_KEY } from "../core/factions";
 import { beats } from "../core/rules";
 import { BalanceMeter, computeEquilibrium, type FactionCounts } from "../systems/balanceMeter";
-import { Interventions, type CooldownState, type AbilityKey } from "../systems/interventions";
+import {
+  Interventions,
+  type CooldownState,
+  type AbilityKey,
+} from "../systems/interventions";
 import { getPalette } from "../core/palette";
-import { ENTITY_SIZE, BASE_SPEED, GRID_SIZE } from "../core/constants";
+import { ENTITY_SIZE, BASE_SPEED, ENTITY_DRAG, GRID_SIZE } from "../core/constants";
 import { initSeed, getSeed, between } from "../utils/rng";
 import { playSfx, setMuted as setMutedAudio } from "../audio";
 import { getBool, setBool, getNumber, setNumber } from "../utils/save";
@@ -36,6 +40,10 @@ const EQUILIBRIUM_THRESHOLD = 0.28;
 const EQUILIBRIUM_WINDOW = 60;
 const SPAWN_COUNT = 60;
 const ENTITY_CAP = 600;
+const SOFT_ENTITY_CAP = 480;
+const ENTITY_SCALE_MIN = 0.45;
+const ENTITY_SCALE_MAX = 1;
+const FX_SUPPRESSION_THRESHOLD = 520;
 const WORLD_PADDING = 48;
 const INTERACTION_COOLDOWN_ATTACKER = 1400;
 const INTERACTION_COOLDOWN_DEFENDER = 900;
@@ -46,11 +54,19 @@ const COMBO_DEFINITIONS = [
   { sequence: ['3', '4'] as const, window: 3500, effect: 'resonantBulwark' as const },
   { sequence: ['4', '1'] as const, window: 4000, effect: 'terraEscort' as const },
   { sequence: ['1', '3'] as const, window: 3200, effect: 'surgeBloom' as const },
+  { sequence: ['3', '5'] as const, window: 3600, effect: 'overclockDetonation' as const },
 ] as const;
 type ComboEffect = (typeof COMBO_DEFINITIONS)[number]['effect'];
 
 const BACKGROUND_UNSTABLE = Phaser.Display.Color.ValueToColor(0xff6347);
 const BACKGROUND_STABLE = Phaser.Display.Color.ValueToColor(0x55e6a5);
+const MINIMAP_SIZE = 168;
+const MINIMAP_PADDING = 18;
+const ENTITY_TRAIL_CONFIG: Record<FactionId, { tint: number; lifespan: number }> = {
+  Fire: { tint: 0xff5c43, lifespan: 220 },
+  Water: { tint: 0x55e6a5, lifespan: 260 },
+  Earth: { tint: 0xc2a97a, lifespan: 320 },
+};
 
 export class Game extends Phaser.Scene {
   private mode: Mode = "Balance";
@@ -91,6 +107,15 @@ export class Game extends Phaser.Scene {
   private speedIndex = 1;
   private currentSpeed = 1;
   private comboHistory: Array<{ key: AbilityKey; time: number; data?: ComboContext }> = [];
+  private abilityQueue: Array<{ key: AbilityKey; point?: Phaser.Math.Vector2 }> = [];
+  private lastAbilityTime = 0;
+  private driftAccumulator = 0;
+  private despawnAccumulator = 0;
+  private globalEntityScale = 1;
+  private lowDetailFx = false;
+  private miniMapContainer?: Phaser.GameObjects.Container;
+  private miniMapGraphics?: Phaser.GameObjects.Graphics;
+  private totalEntityCount = 0;
   private readonly handleEntityCreated = (sprite: Phaser.Physics.Arcade.Image, faction: FactionId) => {
     this.decorateFactionSprite(sprite, faction, true);
   };
@@ -121,10 +146,17 @@ export class Game extends Phaser.Scene {
     this.meter = new BalanceMeter(this.groups);
     this.interventions = new Interventions(this, this.groups, { maxEntities: ENTITY_CAP });
     this.interventions.setPalette(this.palette);
+    this.interventions.setLowDetail(this.lowDetailFx);
 
     this.events.on('entity-created', this.handleEntityCreated, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.events.off('entity-created', this.handleEntityCreated, this);
+    });
+
+    this.createMiniMap();
+    this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     });
 
     this.spawnInitial(SPAWN_COUNT);
@@ -198,19 +230,19 @@ export class Game extends Phaser.Scene {
   private handleUiAbilityClick(key: AbilityKey): void {
     switch (key) {
       case '1':
-        this.trySpawnAt(this.pointerWorld());
+        this.queueAbility('1', this.pointerWorld());
         break;
       case '2':
-        this.trySlowStrongest();
+        this.queueAbility('2');
         break;
       case '3':
-        this.tryBuffWeakest();
+        this.queueAbility('3');
         break;
       case '4':
-        this.tryShieldWeakest();
+        this.queueAbility('4');
         break;
       case '5':
-        this.tryNukeAt(this.pointerWorld());
+        this.queueAbility('5', this.pointerWorld());
         break;
       default:
         break;
@@ -249,6 +281,7 @@ export class Game extends Phaser.Scene {
     }
     if (!this.paused && !this.ended) {
       this.elapsed += dt;
+      this.processAbilityQueue();
       const counts = this.meter.counts();
       this.counts = { ...counts };
       const equilibrium = computeEquilibrium(counts);
@@ -257,16 +290,57 @@ export class Game extends Phaser.Scene {
       } else {
         this.equilibriumStable = 0;
       }
+      this.totalEntityCount = FACTIONS.reduce((sum, id) => sum + counts[id], 0);
+      this.updateEntityScale(dt);
+      this.updateFxDetailLevel();
+      this.applyProgressiveDrift(dt);
+      this.enforceSoftCap(dt);
       this.applyFactionBehaviours(dt);
       this.checkEndConditions(counts, equilibrium);
       this.publishTick(counts, equilibrium);
       this.animateBackground(equilibrium);
+      this.updateMiniMap();
     } else {
       const equilibrium = computeEquilibrium(this.counts);
       this.publishTick(this.counts, equilibrium);
       this.animateBackground(equilibrium);
+      this.processAbilityQueue();
+      this.updateMiniMap();
     }
     this.updateCooldowns();
+  }
+
+  private processAbilityQueue(): void {
+    if (this.abilityQueue.length === 0) {
+      return;
+    }
+    if (!this.canAct()) {
+      this.abilityQueue.length = 0;
+      return;
+    }
+    const queue = [...this.abilityQueue];
+    this.abilityQueue.length = 0;
+    queue.forEach((entry) => {
+      switch (entry.key) {
+        case '1':
+          if (entry.point) this.trySpawnAt(entry.point.clone());
+          break;
+        case '2':
+          this.trySlowStrongest();
+          break;
+        case '3':
+          this.tryBuffWeakest();
+          break;
+        case '4':
+          this.tryShieldWeakest();
+          break;
+        case '5':
+          if (entry.point) this.tryNukeAt(entry.point.clone());
+          break;
+        default:
+          break;
+      }
+    });
   }
 
   restart(regenerateSeed = false): void {
@@ -301,6 +375,13 @@ export class Game extends Phaser.Scene {
     this.physics.world.resume();
     this.speedIndex = 1;
     this.applySpeed(this.getCurrentSpeed());
+    this.abilityQueue.length = 0;
+    this.lastAbilityTime = 0;
+    this.driftAccumulator = 0;
+    this.despawnAccumulator = 0;
+    this.globalEntityScale = 1;
+    this.lowDetailFx = false;
+    this.totalEntityCount = 0;
   }
 
   private initializeSettings(): void {
@@ -344,6 +425,9 @@ export class Game extends Phaser.Scene {
       const y = between(WORLD_PADDING, this.scale.height - WORLD_PADDING);
       this.spawnEntity(faction, x, y);
     }
+    this.totalEntityCount = this.totalActiveEntities();
+    this.globalEntityScale = Phaser.Math.Clamp(1 - this.totalEntityCount / ENTITY_CAP, ENTITY_SCALE_MIN, ENTITY_SCALE_MAX);
+    this.rescaleActiveSprites();
     this.refreshAndPublish();
   }
 
@@ -402,6 +486,7 @@ export class Game extends Phaser.Scene {
 
     sprite.setData('faction', faction);
     sprite.setData('shielded', false);
+    sprite.setData('speedScale', 1);
     this.decorateFactionSprite(sprite, faction, false);
     const body = sprite.body as Phaser.Physics.Arcade.Body | null;
     if (body) {
@@ -413,20 +498,28 @@ export class Game extends Phaser.Scene {
     playSfx('convert');
   }
 
+  private queueAbility(key: AbilityKey, point?: Phaser.Math.Vector2): void {
+    if (point) {
+      this.abilityQueue.push({ key, point: point.clone() });
+    } else {
+      this.abilityQueue.push({ key });
+    }
+  }
+
   private registerInput(): void {
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
       if (!pointer.leftButtonDown()) return;
-      this.trySpawnAt(this.pointerWorld(pointer));
+      this.queueAbility('1', this.pointerWorld(pointer));
     });
 
     const keyboard = this.input.keyboard;
     if (!keyboard) return;
 
-    keyboard.on("keydown-ONE", () => this.trySpawnAt(this.pointerWorld()));
-    keyboard.on("keydown-TWO", () => this.trySlowStrongest());
-    keyboard.on("keydown-THREE", () => this.tryBuffWeakest());
-    keyboard.on("keydown-FOUR", () => this.tryShieldWeakest());
-    keyboard.on("keydown-FIVE", () => this.tryNukeAt(this.pointerWorld()));
+    keyboard.on("keydown-ONE", () => this.queueAbility('1', this.pointerWorld()));
+    keyboard.on("keydown-TWO", () => this.queueAbility('2'));
+    keyboard.on("keydown-THREE", () => this.queueAbility('3'));
+    keyboard.on("keydown-FOUR", () => this.queueAbility('4'));
+    keyboard.on("keydown-FIVE", () => this.queueAbility('5', this.pointerWorld()));
 
     keyboard.on("keydown-M", () => this.toggleMute());
     keyboard.on("keydown-C", () => this.toggleColorblind());
@@ -447,6 +540,7 @@ export class Game extends Phaser.Scene {
     const success = this.interventions.spawnWeakest(point);
     if (success) {
       this.interventionsUsed += 1;
+      this.onAbilityUsed();
       playSfx('spawn');
       this.registerAbilityUse('1', { point: point.clone(), faction });
       this.refreshAndPublish();
@@ -458,6 +552,7 @@ export class Game extends Phaser.Scene {
     const faction = this.meter.strongest();
     if (this.interventions.slowStrongest()) {
       this.interventionsUsed += 1;
+      this.onAbilityUsed();
       playSfx('slow');
       this.registerAbilityUse('2', { faction });
     }
@@ -468,6 +563,7 @@ export class Game extends Phaser.Scene {
     const faction = this.meter.weakest();
     if (this.interventions.buffWeakest()) {
       this.interventionsUsed += 1;
+      this.onAbilityUsed();
       playSfx('buff');
       this.registerAbilityUse('3', { faction });
     }
@@ -478,6 +574,7 @@ export class Game extends Phaser.Scene {
     const faction = this.meter.weakest();
     if (this.interventions.shieldWeakest()) {
       this.interventionsUsed += 1;
+      this.onAbilityUsed();
       playSfx('shield');
       const count = this.groups[faction].countActive(true);
       this.registerAbilityUse('4', { faction, count });
@@ -491,10 +588,17 @@ export class Game extends Phaser.Scene {
     if (success) {
       this.interventionsUsed += 1;
       this.nukeUsed = true;
+      this.onAbilityUsed();
       playSfx('nuke');
       this.registerAbilityUse('5', { point: point.clone() });
       this.refreshAndPublish();
     }
+  }
+
+  private onAbilityUsed(): void {
+    this.lastAbilityTime = this.elapsed;
+    this.driftAccumulator = 0;
+    this.despawnAccumulator = Math.max(0, this.despawnAccumulator - 0.5);
   }
 
   private registerAbilityUse(key: AbilityKey, context: ComboContext = {}): void {
@@ -533,6 +637,9 @@ export class Game extends Phaser.Scene {
         if (first.point && (second.faction ?? first.faction)) {
           this.comboSurgeBloom(first.point, second.faction ?? first.faction!);
         }
+        break;
+      case 'overclockDetonation':
+        this.comboOverclockDetonation(second.point ?? first.point ?? this.pointerWorld());
         break;
       default:
         break;
@@ -627,7 +734,7 @@ export class Game extends Phaser.Scene {
     sprites.forEach((sprite) => {
       sprite.setData('shielded', true);
     });
-    shieldFx(this, sprites, 4800);
+    shieldFx(this, sprites, 4800, this.lowDetailFx ? 'low' : 'high');
     this.time.delayedCall(4800, () => {
       sprites.forEach((sprite) => {
         if (!sprite.active) return;
@@ -646,7 +753,7 @@ export class Game extends Phaser.Scene {
       const offset = new Phaser.Math.Vector2().setToPolar(angle, 40);
       const sprite = this.spawnEntity(faction, Phaser.Math.Clamp(point.x + offset.x, WORLD_PADDING, this.scale.width - WORLD_PADDING), Phaser.Math.Clamp(point.y + offset.y, WORLD_PADDING, this.scale.height - WORLD_PADDING));
       sprite.setData('shielded', true);
-      shieldFx(this, [sprite], 2600);
+      shieldFx(this, [sprite], 2600, this.lowDetailFx ? 'low' : 'high');
       this.time.delayedCall(2600, () => {
         if (sprite.active) sprite.setData('shielded', false);
       });
@@ -678,6 +785,50 @@ export class Game extends Phaser.Scene {
     burst(this, origin.x, origin.y, this.palette[faction], 'medium');
   }
 
+  private collectSprites(): Phaser.Physics.Arcade.Image[] {
+    const list: Phaser.Physics.Arcade.Image[] = [];
+    (Object.values(this.groups) as Phaser.Physics.Arcade.Group[]).forEach((group) => {
+      const children = group.getChildren() as Phaser.Physics.Arcade.Image[];
+      children.forEach((sprite) => {
+        if (sprite.active) {
+          list.push(sprite);
+        }
+      });
+    });
+    return list;
+  }
+
+  private comboOverclockDetonation(origin: Phaser.Math.Vector2): void {
+    const radius = 140;
+    const radiusSq = radius * radius;
+    const sprites = this.collectSprites();
+    const candidates = sprites
+      .map((sprite) => ({
+        sprite,
+        dist: (sprite.x - origin.x) * (sprite.x - origin.x) + (sprite.y - origin.y) * (sprite.y - origin.y),
+      }))
+      .filter((entry) => entry.dist <= radiusSq)
+      .sort((a, b) => a.dist - b.dist);
+    const extra = candidates.slice(0, 4);
+    extra.forEach(({ sprite }) => sprite.destroy());
+    const shockwave = candidates.slice(4);
+    shockwave.forEach(({ sprite }) => {
+      if (!sprite.active) return;
+      const body = sprite.body as Phaser.Physics.Arcade.Body | null;
+      if (body) {
+        body.velocity.scale(0.6);
+      }
+      this.tweens.add({
+        targets: sprite,
+        alpha: { from: sprite.alpha, to: Math.max(0.45, sprite.alpha * 0.7) },
+        yoyo: true,
+        duration: 220,
+      });
+    });
+    burst(this, origin.x, origin.y, 0xffc67a, 'large');
+    this.cameras.main.shake(140, 0.006);
+  }
+
   private spawnEarthFragments(origin: Phaser.Math.Vector2): number {
     if (!this.canSpawnAdditional(1)) {
       return 0;
@@ -694,7 +845,7 @@ export class Game extends Phaser.Scene {
       const x = Phaser.Math.Clamp(origin.x + offset.x, WORLD_PADDING, this.scale.width - WORLD_PADDING);
       const y = Phaser.Math.Clamp(origin.y + offset.y, WORLD_PADDING, this.scale.height - WORLD_PADDING);
       const sprite = this.spawnEntity('Earth', x, y);
-      sprite.setDisplaySize(ENTITY_SIZE * 0.85, ENTITY_SIZE * 0.85);
+      this.applySpriteScale(sprite, this.globalEntityScale * 0.85);
       sprite.setAlpha(0.9);
       sprite.setData('fragment', true);
       sprite.setData('baseSpeed', SPEED.Earth * BASE_SPEED * 0.85);
@@ -759,7 +910,7 @@ export class Game extends Phaser.Scene {
     const targets = sprites.filter((sprite) => sprite.active && (sprite.x - anchor.x) ** 2 + (sprite.y - anchor.y) ** 2 <= radiusSq);
     if (!targets.length) return;
     targets.forEach((sprite) => sprite.setData('shielded', true));
-    shieldFx(this, targets, 2800);
+    shieldFx(this, targets, 2800, this.lowDetailFx ? 'low' : 'high');
     this.time.delayedCall(2800, () => {
       targets.forEach((sprite) => {
         if (sprite.active) sprite.setData('shielded', false);
@@ -834,7 +985,7 @@ export class Game extends Phaser.Scene {
       }
     });
     if (!targets.length) return;
-    shieldFx(this, targets, 2400);
+    shieldFx(this, targets, 2400, this.lowDetailFx ? 'low' : 'high');
     this.time.delayedCall(2400, () => {
       targets.forEach((sprite) => {
         if (sprite.active) sprite.setData('shielded', false);
@@ -1078,10 +1229,13 @@ export class Game extends Phaser.Scene {
 
   private decorateFactionSprite(sprite: Phaser.Physics.Arcade.Image, faction: FactionId, fresh: boolean): void {
     const baseKey = TEXTURE_KEY[faction];
-    const variantKey = this.colorblind ? `${baseKey}-alt` : baseKey;
-    const textureKey = this.textures.exists(variantKey) ? variantKey : baseKey;
+    const altKey = `${baseKey}-alt`;
+    const preferAlt = this.colorblind || this.globalEntityScale < 0.9;
+    const textureKey = preferAlt && this.textures.exists(altKey) ? altKey : baseKey;
     sprite.setTexture(textureKey);
-    sprite.setDisplaySize(ENTITY_SIZE, ENTITY_SIZE);
+    this.applySpriteScale(sprite, this.globalEntityScale);
+    const baseVisualScale = sprite.displayWidth / Math.max(sprite.width, 1);
+    sprite.setData('visualScale', baseVisualScale);
     sprite.setOrigin(0.5, 0.5);
     sprite.setTint(this.palette[faction]);
     if (fresh) {
@@ -1105,6 +1259,9 @@ export class Game extends Phaser.Scene {
       sprite.setData('interactionGuard', Math.max(now + 160, existingGuard));
     }
     sprite.setData('baseSpeed', SPEED[faction] * BASE_SPEED);
+    if (fresh || typeof sprite.getData('speedScale') !== 'number') {
+      sprite.setData('speedScale', 1);
+    }
     if (faction === 'Water' && typeof sprite.getData('wavePhase') !== 'number') {
       sprite.setData('wavePhase', Phaser.Math.FloatBetween(0, Math.PI * 2));
     }
@@ -1122,7 +1279,7 @@ export class Game extends Phaser.Scene {
     }
     const existingTween = sprite.getData('animTween') as Phaser.Tweens.Tween | undefined;
     if (existingTween) existingTween.remove();
-    sprite.setScale(1);
+    sprite.setScale((sprite.getData('visualScale') as number) ?? baseVisualScale);
     sprite.setAngle(0);
     const tween = this.createFactionTween(sprite, faction);
     sprite.setData('animTween', tween ?? null);
@@ -1133,9 +1290,11 @@ export class Game extends Phaser.Scene {
       });
       sprite.setData('animCleanup', true);
     }
+    this.configureTrail(sprite, faction);
   }
 
   private createFactionTween(sprite: Phaser.Physics.Arcade.Image, faction: FactionId): Phaser.Tweens.Tween | null {
+    const baseScale = (sprite.getData('visualScale') as number) ?? 1;
     switch (faction) {
       case 'Fire':
         return this.tweens.add({
@@ -1144,10 +1303,10 @@ export class Game extends Phaser.Scene {
           repeat: -1,
           ease: 'Linear',
           keyframes: [
-            { offset: 0, scaleX: 1, scaleY: 1, angle: 0.2 },
-            { offset: 0.4, scaleX: 1.03, scaleY: 1.03, angle: -0.4 },
-            { offset: 0.65, scaleX: 0.99, scaleY: 0.99, angle: 0.3 },
-            { offset: 1, scaleX: 1, scaleY: 1, angle: 0 },
+            { offset: 0, scaleX: baseScale, scaleY: baseScale, angle: 0.2 },
+            { offset: 0.4, scaleX: baseScale * 1.03, scaleY: baseScale * 1.03, angle: -0.4 },
+            { offset: 0.65, scaleX: baseScale * 0.99, scaleY: baseScale * 0.99, angle: 0.3 },
+            { offset: 1, scaleX: baseScale, scaleY: baseScale, angle: 0 },
           ],
         });
       case 'Water':
@@ -1157,9 +1316,9 @@ export class Game extends Phaser.Scene {
           repeat: -1,
           ease: Phaser.Math.Easing.Sine.InOut,
           keyframes: [
-            { offset: 0, scaleX: 0.98, scaleY: 1.02, angle: -0.4 },
-            { offset: 0.5, scaleX: 1.04, scaleY: 0.96, angle: 0.4 },
-            { offset: 1, scaleX: 0.98, scaleY: 1.02, angle: -0.4 },
+            { offset: 0, scaleX: baseScale * 0.98, scaleY: baseScale * 1.02, angle: -0.4 },
+            { offset: 0.5, scaleX: baseScale * 1.04, scaleY: baseScale * 0.96, angle: 0.4 },
+            { offset: 1, scaleX: baseScale * 0.98, scaleY: baseScale * 1.02, angle: -0.4 },
           ],
         });
       case 'Earth':
@@ -1169,10 +1328,10 @@ export class Game extends Phaser.Scene {
           repeat: -1,
           ease: Phaser.Math.Easing.Sine.InOut,
           keyframes: [
-            { offset: 0, scaleX: 1, scaleY: 1, angle: 0 },
-            { offset: 0.35, scaleX: 0.98, scaleY: 1.02, angle: 1.2 },
-            { offset: 0.65, scaleX: 1.02, scaleY: 0.98, angle: -1.2 },
-            { offset: 1, scaleX: 1, scaleY: 1, angle: 0 },
+            { offset: 0, scaleX: baseScale, scaleY: baseScale, angle: 0 },
+            { offset: 0.35, scaleX: baseScale * 0.98, scaleY: baseScale * 1.02, angle: 1.2 },
+            { offset: 0.65, scaleX: baseScale * 1.02, scaleY: baseScale * 0.98, angle: -1.2 },
+            { offset: 1, scaleX: baseScale, scaleY: baseScale, angle: 0 },
           ],
         });
       default:
@@ -1225,14 +1384,216 @@ export class Game extends Phaser.Scene {
     const body = sprite.body as Phaser.Physics.Arcade.Body | null;
     if (!body) return;
     const baseSpeed = (sprite.getData('baseSpeed') as number) || BASE_SPEED;
+    const speedScale = (sprite.getData('speedScale') as number) ?? 1;
+    const targetSpeed = baseSpeed * speedScale;
     const current = body.velocity.length();
     if (current <= 1) {
       const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
-      body.velocity.setToPolar(angle, baseSpeed);
+      body.velocity.setToPolar(angle, targetSpeed);
       return;
     }
-    const newLength = Phaser.Math.Linear(current, baseSpeed, lerp);
+    const newLength = Phaser.Math.Linear(current, targetSpeed, lerp);
     body.velocity.setLength(newLength);
+  }
+
+  private applySpriteScale(sprite: Phaser.Physics.Arcade.Image, scale: number): void {
+    const clamped = Phaser.Math.Clamp(scale, ENTITY_SCALE_MIN * 0.8, ENTITY_SCALE_MAX);
+    const size = ENTITY_SIZE * clamped;
+    sprite.setDisplaySize(size, size);
+    this.syncBodyShape(sprite);
+  }
+
+  private syncBodyShape(sprite: Phaser.Physics.Arcade.Image): void {
+    const body = sprite.body as Phaser.Physics.Arcade.Body | null;
+    if (!body) return;
+    const radius = sprite.displayWidth * 0.45;
+    const offset = (sprite.displayWidth - radius * 2) / 2;
+    body.setCircle(radius, offset, offset);
+    body.setDamping(true);
+    body.setDrag(ENTITY_DRAG, ENTITY_DRAG);
+  }
+
+  private configureTrail(sprite: Phaser.Physics.Arcade.Image, faction: FactionId): void {
+    const config = ENTITY_TRAIL_CONFIG[faction];
+    if (!this.textures.exists('dot')) {
+      return;
+    }
+    const existing = sprite.getData('trailEmitter') as Phaser.GameObjects.Particles.ParticleEmitter | undefined;
+    if (existing && existing.scene) {
+      existing.stop();
+      existing.destroy();
+    }
+    const emitter = this.add.particles(sprite.x, sprite.y, 'dot', {
+      quantity: this.lowDetailFx ? 1 : 2,
+      frequency: this.lowDetailFx ? 140 : 90,
+      lifespan: config.lifespan,
+      speed: { min: 0, max: 18 },
+      alpha: { start: 0.42, end: 0 },
+      scale: { start: 0.55 * this.globalEntityScale, end: 0 },
+      tint: config.tint,
+      blendMode: Phaser.BlendModes.ADD,
+    }) as Phaser.GameObjects.Particles.ParticleEmitter;
+    emitter.startFollow(sprite);
+    sprite.setData('trailEmitter', emitter);
+    sprite.once(Phaser.GameObjects.Events.DESTROY, () => {
+      emitter.stop();
+      emitter.destroy();
+    });
+  }
+
+  private updateEntityScale(dt: number): void {
+    const target = Phaser.Math.Clamp(1 - this.totalEntityCount / ENTITY_CAP, ENTITY_SCALE_MIN, ENTITY_SCALE_MAX);
+    const lerpFactor = Phaser.Math.Clamp(dt * 6, 0, 1);
+    const next = Phaser.Math.Linear(this.globalEntityScale, target, lerpFactor);
+    if (Math.abs(next - this.globalEntityScale) > 0.015) {
+      this.globalEntityScale = next;
+      this.rescaleActiveSprites();
+    }
+  }
+
+  private rescaleActiveSprites(): void {
+    FACTIONS.forEach((faction) => {
+      const sprites = this.groups[faction].getChildren() as Phaser.Physics.Arcade.Image[];
+      sprites.forEach((sprite) => {
+        if (!sprite.active) return;
+        this.applySpriteScale(sprite, this.globalEntityScale);
+        const baseScale = sprite.displayWidth / Math.max(sprite.width, 1);
+        sprite.setData('visualScale', baseScale);
+        sprite.setScale(baseScale);
+        this.configureTrail(sprite, faction);
+      });
+    });
+  }
+
+  private updateFxDetailLevel(): void {
+    const lowDetail = this.totalEntityCount > FX_SUPPRESSION_THRESHOLD;
+    if (lowDetail === this.lowDetailFx) {
+      return;
+    }
+    this.lowDetailFx = lowDetail;
+    this.interventions.setLowDetail(lowDetail);
+    this.rescaleActiveSprites();
+  }
+
+  private createMiniMap(): void {
+    if (this.miniMapContainer) {
+      this.miniMapContainer.destroy(true);
+    }
+    const container = this.add.container(MINIMAP_PADDING, MINIMAP_PADDING).setDepth(52).setScrollFactor(0);
+    const background = this.add
+      .rectangle(0, 0, MINIMAP_SIZE + 16, MINIMAP_SIZE + 16, 0x041425, 0.86)
+      .setOrigin(0, 0)
+      .setStrokeStyle(2, 0x123252, 0.85);
+    const graphics = this.add.graphics({ x: 8, y: 8 }).setScrollFactor(0).setDepth(53);
+    container.add([background, graphics]);
+    this.miniMapContainer = container;
+    this.miniMapGraphics = graphics;
+  }
+
+  private updateMiniMap(): void {
+    if (!this.miniMapGraphics || !this.miniMapGraphics.scene) {
+      return;
+    }
+    const gfx = this.miniMapGraphics;
+    gfx.clear();
+    gfx.fillStyle(0x0a1b30, 0.78);
+    gfx.fillRoundedRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE, 10);
+    const width = Math.max(this.scale.width, 1);
+    const height = Math.max(this.scale.height, 1);
+    const scaleX = MINIMAP_SIZE / width;
+    const scaleY = MINIMAP_SIZE / height;
+    const dotSize = Phaser.Math.Clamp(2 + this.globalEntityScale * 3, 2, 6);
+    FACTIONS.forEach((faction) => {
+      gfx.fillStyle(this.palette[faction], 0.85);
+      const sprites = this.groups[faction].getChildren() as Phaser.Physics.Arcade.Image[];
+      sprites.forEach((sprite) => {
+        if (!sprite.active) return;
+        const x = Phaser.Math.Clamp(sprite.x * scaleX, 0, MINIMAP_SIZE);
+        const y = Phaser.Math.Clamp(sprite.y * scaleY, 0, MINIMAP_SIZE);
+        gfx.fillRect(x - dotSize * 0.5, y - dotSize * 0.5, dotSize, dotSize);
+      });
+    });
+  }
+
+  private handleResize(size: Phaser.Structs.Size): void {
+    const { width, height } = size;
+    this.physics.world.setBounds(0, 0, width, height);
+    if (this.backgroundGrid) {
+      this.backgroundGrid.setDisplaySize(width, height);
+      this.backgroundGrid.setPosition(width / 2, height / 2);
+    }
+    if (this.scanlineOverlay) {
+      this.scanlineOverlay.setSize(width, height);
+      this.scanlineOverlay.setPosition(width / 2, height / 2);
+    }
+    this.miniMapContainer?.setPosition(MINIMAP_PADDING, MINIMAP_PADDING);
+  }
+
+  private applyProgressiveDrift(dt: number): void {
+    const idle = this.elapsed - this.lastAbilityTime;
+    if (idle <= 6) {
+      this.driftAccumulator = 0;
+      return;
+    }
+    const elapsedFactor = Phaser.Math.Clamp((this.elapsed - 30) / 90, 0, 1);
+    const idleFactor = Phaser.Math.Clamp((idle - 6) / 24, 0, 1);
+    const rate = (0.25 + 0.6 * elapsedFactor) * idleFactor;
+    this.driftAccumulator += dt * rate;
+    if (this.driftAccumulator >= 1) {
+      this.driftAccumulator -= 1;
+      this.forceEquilibriumDrift();
+    }
+  }
+
+  private forceEquilibriumDrift(): void {
+    const strongest = this.meter.strongest();
+    const weakest = this.meter.weakest();
+    if (strongest === weakest) {
+      return;
+    }
+    const weakGroup = this.groups[weakest];
+    const candidates = (weakGroup.getChildren() as Phaser.Physics.Arcade.Image[]).filter((sprite) => sprite.active);
+    if (candidates.length === 0) {
+      return;
+    }
+    const target = Phaser.Utils.Array.GetRandom(candidates);
+    if (!target) return;
+    this.convert(target, strongest);
+  }
+
+  private enforceSoftCap(dt: number): void {
+    if (this.totalEntityCount <= SOFT_ENTITY_CAP) {
+      this.despawnAccumulator = 0;
+      return;
+    }
+    const excess = this.totalEntityCount - SOFT_ENTITY_CAP;
+    this.despawnAccumulator += dt * Phaser.Math.Clamp(excess / 24, 0.15, 1.2);
+    while (this.despawnAccumulator >= 1) {
+      this.despawnAccumulator -= 1;
+      this.fadeDespawnOne();
+    }
+  }
+
+  private fadeDespawnOne(): void {
+    const faction = this.meter.strongest();
+    const sprites = (this.groups[faction].getChildren() as Phaser.Physics.Arcade.Image[]).filter((sprite) => sprite.active);
+    if (sprites.length === 0) {
+      return;
+    }
+    const sprite = Phaser.Utils.Array.GetRandom(sprites);
+    if (!sprite) {
+      return;
+    }
+    this.tweens.add({
+      targets: sprite,
+      alpha: { from: sprite.alpha, to: 0 },
+      scale: { from: 1, to: 0.4 },
+      duration: 260,
+      ease: Phaser.Math.Easing.Sine.In,
+      onComplete: () => {
+        sprite.destroy();
+      },
+    });
   }
 
   private totalActiveEntities(): number {

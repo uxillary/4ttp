@@ -32,6 +32,7 @@ export class Boot extends Phaser.Scene {
     this.loadAlternateIcons();
     this.createScanlineTexture();
     this.createUiTextures();
+    this.createStatusIcons();
   }
 
   create(): void {
@@ -157,6 +158,75 @@ export class Boot extends Phaser.Scene {
     generate('ui-status-pill', 420, 48, 18, 0x04152a, 0.88, 0x123251, 0.88);
     generate('ui-status-chip', 72, 42, 14, 0x041a32, 0.92, 0x1b3d60, 0.85);
     generate('ui-settings-panel', 260, 180, 24, 0x04152a, 0.82, 0x123251, 0.88);
+
+    graphics.destroy();
+  }
+
+  private createStatusIcons(): void {
+    if (this.textures.exists('status-shield')) {
+      return;
+    }
+    const graphics = this.add.graphics();
+    graphics.setVisible(false);
+
+    const generate = (key: string, drawer: () => void) => {
+      graphics.clear();
+      drawer();
+      graphics.generateTexture(key, 24, 24);
+    };
+
+    generate('status-shield', () => {
+      graphics.fillStyle(0x7fc6ff, 0.58);
+      graphics.lineStyle(2, 0xbbe6ff, 0.9);
+      const cx = 12;
+      const cy = 12;
+      const radius = 8;
+      graphics.beginPath();
+      for (let i = 0; i < 6; i += 1) {
+        const angle = -Math.PI / 2 + (i * Math.PI) / 3;
+        const x = cx + Math.cos(angle) * radius;
+        const y = cy + Math.sin(angle) * radius;
+        if (i === 0) graphics.moveTo(x, y);
+        else graphics.lineTo(x, y);
+      }
+      graphics.closePath();
+      graphics.fillPath();
+      graphics.strokePath();
+    });
+
+    generate('status-buff', () => {
+      graphics.clear();
+      graphics.fillStyle(0xffa860, 0.8);
+      graphics.beginPath();
+      graphics.moveTo(12, 4);
+      graphics.lineTo(19, 16);
+      graphics.lineTo(5, 16);
+      graphics.closePath();
+      graphics.fillPath();
+      graphics.lineStyle(2, 0xffd7a0, 0.9);
+      graphics.strokePath();
+      graphics.fillStyle(0xfff0ce, 0.8);
+      graphics.fillRect(10, 16, 4, 6);
+    });
+
+    generate('status-slow', () => {
+      graphics.clear();
+      graphics.lineStyle(2, 0xb9e3ff, 0.95);
+      const cx = 12;
+      const cy = 12;
+      const arm = 7;
+      for (let i = 0; i < 3; i += 1) {
+        const angle = (i * Math.PI) / 3;
+        const dx = Math.cos(angle) * arm;
+        const dy = Math.sin(angle) * arm;
+        graphics.beginPath();
+        graphics.moveTo(cx - dx, cy - dy);
+        graphics.lineTo(cx + dx, cy + dy);
+        graphics.strokePath();
+      }
+      graphics.fillStyle(0xb9e3ff, 0.8);
+      graphics.fillCircle(cx, cy, 2.5);
+    });
 
     graphics.destroy();
   }

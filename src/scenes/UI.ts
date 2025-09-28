@@ -5,11 +5,23 @@ import { NAME_MAP, TEXTURE_KEY, FACTIONS } from "../core/factions";
 import type { FactionId } from "../core/types";
 import { BalanceBar, type FactionCounts, computeEquilibrium } from "../systems/balanceMeter";
 import type { CooldownState, AbilityKey } from "../systems/interventions";
-import { ABILITY_METADATA } from "../systems/interventions";
+import { ABILITY_METADATA, COOLDOWNS_MS, EFFECT_DURATIONS_MS } from "../systems/interventions";
 import type { GameTickPayload, GameEndSummary } from "./types";
 const FONT_FAMILY = "ui-monospace, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace";
 const HUD_WIDTH = 360;
 const ABILITY_ORDER: AbilityKey[] = ['1', '2', '3', '4', '5'];
+const ABILITY_INPUT_HINT: Record<AbilityKey, string> = {
+  '1': 'LMB / [1]',
+  '2': '[2]',
+  '3': '[3]',
+  '4': '[4]',
+  '5': '[5]',
+};
+const ABILITY_DURATION_HINT: Partial<Record<AbilityKey, string>> = {
+  '2': `Effect: Slow for ${(EFFECT_DURATIONS_MS.slow / 1000).toFixed(1)}s`,
+  '3': `Effect: Buff for ${(EFFECT_DURATIONS_MS.buff / 1000).toFixed(1)}s`,
+  '4': `Effect: Shield for ${(EFFECT_DURATIONS_MS.shield / 1000).toFixed(1)}s`,
+};
 const TOGGLE_KEYS = ['audio', 'hud', 'palette', 'speed', 'pause', 'info'] as const;
 type ToggleKey = (typeof TOGGLE_KEYS)[number];
 type AbilityMeta = (typeof ABILITY_METADATA)[AbilityKey];
@@ -299,6 +311,9 @@ Seed: ${summary.seed}`);
       const keycapLabel = this.add.text(-54, 0, key, { fontFamily: FONT_FAMILY, fontSize: '18px', color: '#e8faff' }).setOrigin(0.5);
       const label = this.add.text(-18, -10, meta.name, { fontFamily: FONT_FAMILY, fontSize: '18px', color: '#cfe8ff' }).setOrigin(0, 0.5);
       const detail = this.add.text(-18, 14, meta.hint ?? '', { fontFamily: FONT_FAMILY, fontSize: '13px', color: '#7fb8ff' }).setOrigin(0, 0.5);
+      const cooldownSeconds = (COOLDOWNS_MS[key] ?? 0) / 1000;
+      const inputHint = ABILITY_INPUT_HINT[key];
+      detail.setText(`${inputHint} · ${cooldownSeconds.toFixed(1)}s CD`);
       const cooldown = this.add.text(0, 34, '', { fontFamily: FONT_FAMILY, fontSize: '13px', color: '#6fa4d9' }).setOrigin(0.5);
       container.add([background, keycap, keycapLabel, label, detail, cooldown]);
       container.setSize(132, 58);
@@ -471,7 +486,14 @@ Seed: ${summary.seed}`);
     const worldY = this.abilityBar.y + button.container.y;
     this.tooltip.setPosition(worldX, worldY - 100);
     this.tooltipTitle.setText(meta.name.toUpperCase());
-    const lines: string[] = [meta.description];
+    const lines: string[] = [meta.description, meta.hint];
+    const cooldownSeconds = (COOLDOWNS_MS[key] ?? 0) / 1000;
+    const inputHint = ABILITY_INPUT_HINT[key];
+    lines.push(`Input: ${inputHint} • Cooldown: ${cooldownSeconds.toFixed(1)}s`);
+    const durationHint = ABILITY_DURATION_HINT[key];
+    if (durationHint) {
+      lines.push(durationHint);
+    }
     if (meta.combo) {
       lines.push(`Synergy: ${meta.combo}`);
     }
@@ -505,6 +527,12 @@ Seed: ${summary.seed}`);
 
   private handleResize(size: Phaser.Structs.Size): void {
     const { width, height } = size;
+    const scaleFactor = Phaser.Math.Clamp(width / 1280, 0.9, 1.15);
+    this.hud.setScale(scaleFactor);
+    this.abilityBar.setScale(scaleFactor);
+    this.statusBar.setScale(scaleFactor);
+    this.tooltip.setScale(scaleFactor);
+    this.balanceBar.setScale(scaleFactor, scaleFactor);
     this.abilityBar.setPosition(width / 2, Math.max(height - 82, 140));
     this.statusBar.setPosition(width - 234, 42);
     this.endPanel.setPosition(width / 2, height / 2);
