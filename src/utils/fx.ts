@@ -4,6 +4,8 @@ type ArcadeImage = Phaser.Physics.Arcade.Image;
 
 type BurstSize = 'small' | 'medium' | 'large';
 
+type DetailLevel = 'high' | 'low';
+
 const BURST_CONFIG: Record<BurstSize, { quantity: number; speed: { min: number; max: number }; scale: { start: number; end: number }; lifespan: number }> = {
   small: { quantity: 6, speed: { min: 60, max: 140 }, scale: { start: 3, end: 0 }, lifespan: 180 },
   medium: { quantity: 12, speed: { min: 80, max: 220 }, scale: { start: 4, end: 0 }, lifespan: 240 },
@@ -61,22 +63,60 @@ export function haze(scene: Phaser.Scene, group: Phaser.Physics.Arcade.Group, du
   });
 }
 
-export function shieldFx(scene: Phaser.Scene, targets: ArcadeImage[], durationMs: number): void {
+export function auraGlow(
+  scene: Phaser.Scene,
+  sprite: ArcadeImage,
+  color: number,
+  radiusMultiplier: number,
+  durationMs: number,
+  detail: DetailLevel = 'high'
+): Phaser.GameObjects.Graphics | null {
+  if (!sprite.active) return null;
+  const radius = sprite.displayWidth * radiusMultiplier;
+  const graphics = scene.add.graphics({ x: sprite.x, y: sprite.y }).setDepth(560);
+  const alpha = detail === 'high' ? 0.22 : 0.14;
+  graphics.fillStyle(color, alpha);
+  graphics.fillCircle(0, 0, radius);
+  graphics.lineStyle(1, color, detail === 'high' ? 0.8 : 0.5);
+  graphics.strokeCircle(0, 0, radius + 2);
+  const update = () => graphics.setPosition(sprite.x, sprite.y);
+  scene.events.on(Phaser.Scenes.Events.POST_UPDATE, update);
+  scene.tweens.add({
+    targets: graphics,
+    alpha: { from: graphics.alpha, to: 0 },
+    duration: durationMs,
+    ease: Phaser.Math.Easing.Sine.InOut,
+    onComplete: () => {
+      scene.events.off(Phaser.Scenes.Events.POST_UPDATE, update);
+      graphics.destroy();
+    },
+  });
+  return graphics;
+}
+
+export function shieldFx(
+  scene: Phaser.Scene,
+  targets: ArcadeImage[],
+  durationMs: number,
+  detail: DetailLevel = 'high'
+): void {
   targets.forEach((sprite) => {
     if (!sprite.active) return;
     const ring = scene.add.graphics({ x: sprite.x, y: sprite.y }).setDepth(600);
-    ring.fillStyle(0x7fd1ff, 0.18);
-    ring.fillCircle(0, 0, sprite.displayWidth * 0.75);
-    ring.lineStyle(2, 0x9bdcff, 0.9);
-    ring.strokeCircle(0, 0, sprite.displayWidth * 0.8);
+    const innerRadius = sprite.displayWidth * (detail === 'high' ? 0.72 : 0.6);
+    const outerRadius = sprite.displayWidth * (detail === 'high' ? 0.82 : 0.7);
+    ring.fillStyle(0x7fd1ff, detail === 'high' ? 0.16 : 0.1);
+    ring.fillCircle(0, 0, innerRadius);
+    ring.lineStyle(detail === 'high' ? 2 : 1, 0x9bdcff, detail === 'high' ? 0.85 : 0.55);
+    ring.strokeCircle(0, 0, outerRadius);
     const updatePosition = () => ring.setPosition(sprite.x, sprite.y);
     scene.events.on(Phaser.Scenes.Events.POST_UPDATE, updatePosition);
     scene.tweens.add({
       targets: [ring, sprite],
-      alpha: { from: 0.8, to: 0.5 },
+      alpha: { from: 0.85, to: 0.5 },
       yoyo: true,
-      duration: 260,
-      repeat: Math.max(0, Math.floor(durationMs / 260) - 1),
+      duration: detail === 'high' ? 260 : 320,
+      repeat: Math.max(0, Math.floor(durationMs / (detail === 'high' ? 260 : 320)) - 1),
     });
     scene.time.delayedCall(durationMs, () => {
       scene.events.off(Phaser.Scenes.Events.POST_UPDATE, updatePosition);
@@ -84,3 +124,5 @@ export function shieldFx(scene: Phaser.Scene, targets: ArcadeImage[], durationMs
     });
   });
 }
+
+export type { DetailLevel };

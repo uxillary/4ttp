@@ -2,21 +2,21 @@ import Phaser from 'phaser';
 import { BalanceMeter } from './balanceMeter';
 import type { FactionId } from '../core/types';
 import { COLORS, SPEED, TEXTURE_KEY } from '../core/factions';
-import { ENTITY_SIZE, BASE_SPEED } from '../core/constants';
-import { burst, haze, pulse, shieldFx } from '../utils/fx';
+import { ENTITY_SIZE, BASE_SPEED, ENTITY_DRAG } from '../core/constants';
+import { auraGlow, burst, haze, pulse, shieldFx, type DetailLevel } from '../utils/fx';
 import { rand, between } from '../utils/rng';
 
 export type AbilityKey = '1' | '2' | '3' | '4' | '5';
 
-const COOLDOWNS_MS: Record<AbilityKey, number> = {
-  '1': 500,
-  '2': 8000,
-  '3': 8000,
-  '4': 10000,
-  '5': 12000,
+export const COOLDOWNS_MS: Record<AbilityKey, number> = {
+  '1': 320,
+  '2': 9000,
+  '3': 9500,
+  '4': 12000,
+  '5': 14000,
 };
 
-const EFFECT_DURATIONS_MS = {
+export const EFFECT_DURATIONS_MS = {
   slow: 5000,
   buff: 5000,
   shield: 3000,
@@ -62,7 +62,7 @@ export const ABILITY_METADATA = {
     name: 'Nuke',
     description: 'Removes up to six nearby entities within 80px.',
     hint: 'Purge critical overloads before collapse.',
-    combo: 'Slow prep before Nuke amplifies the blast radius.',
+    combo: 'Slow or Buff prep before Nuke amplifies the blast radius.',
   },
 } as const satisfies Record<AbilityKey, AbilityMetaEntry>;
 
@@ -88,12 +88,17 @@ private readonly cooldownExpires: Record<AbilityKey, number> = {
   private readonly activeVelocity: Partial<Record<'slow' | 'buff', { faction: FactionId; factor: number }>> = {};
   private readonly scheduled: Partial<Record<'slow' | 'buff' | 'shield', Phaser.Time.TimerEvent>> = {};
   private readonly options: InterventionsOptions;
+  private lowDetail = false;
 
   constructor(scene: Phaser.Scene, groups: Record<FactionId, Phaser.Physics.Arcade.Group>, options: InterventionsOptions) {
     this.scene = scene;
     this.groups = groups;
     this.meter = new BalanceMeter(groups);
     this.options = options;
+  }
+
+  setLowDetail(enabled: boolean): void {
+    this.lowDetail = enabled;
   }
 
   setPalette(palette: Record<FactionId, number>): void {
@@ -132,7 +137,10 @@ private readonly cooldownExpires: Record<AbilityKey, number> = {
     }
     const faction = this.meter.strongest();
     this.applyVelocityModifier('slow', faction, 0.75, EFFECT_DURATIONS_MS.slow);
-    haze(this.scene, this.groups[faction], EFFECT_DURATIONS_MS.slow, 0.75);
+    if (!this.lowDetail) {
+      haze(this.scene, this.groups[faction], EFFECT_DURATIONS_MS.slow, 0.75);
+    }
+    this.applyStatusVisuals('slow', faction, EFFECT_DURATIONS_MS.slow);
     return true;
   }
 
@@ -144,6 +152,8 @@ private readonly cooldownExpires: Record<AbilityKey, number> = {
     this.applyVelocityModifier('buff', faction, 1.25, EFFECT_DURATIONS_MS.buff);
     const sprites = this.groups[faction].getChildren() as Phaser.Physics.Arcade.Image[];
     sprites.forEach((sprite) => pulse(this.scene, sprite));
+    this.fadeBuffGroup(sprites, EFFECT_DURATIONS_MS.buff);
+    this.applyStatusVisuals('buff', faction, EFFECT_DURATIONS_MS.buff);
     return true;
   }
 
@@ -154,7 +164,8 @@ private readonly cooldownExpires: Record<AbilityKey, number> = {
     const faction = this.meter.weakest();
     const sprites = this.groups[faction].getChildren() as Phaser.Physics.Arcade.Image[];
     sprites.forEach((sprite) => sprite.setData('shielded', true));
-    shieldFx(this.scene, sprites, EFFECT_DURATIONS_MS.shield);
+    shieldFx(this.scene, sprites, EFFECT_DURATIONS_MS.shield, this.getDetailLevel());
+    this.applyStatusVisuals('shield', faction, EFFECT_DURATIONS_MS.shield);
     this.scheduleEffect('shield', () => {
       sprites.forEach((sprite) => {
         if (!sprite.active) return;
@@ -213,6 +224,7 @@ private readonly cooldownExpires: Record<AbilityKey, number> = {
     sprite.setData('shielded', false);
     const baseSpeed = SPEED[faction] * BASE_SPEED;
     sprite.setData('baseSpeed', baseSpeed);
+    sprite.setData('speedScale', 1);
     if (faction === 'Water') {
       sprite.setData('wavePhase', Phaser.Math.FloatBetween(0, Math.PI * 2));
     }
@@ -221,6 +233,8 @@ private readonly cooldownExpires: Record<AbilityKey, number> = {
       body.setAllowRotation(false);
       body.setBounce(1, 1);
       body.setCollideWorldBounds(true);
+      body.setDamping(true);
+      body.setDrag(ENTITY_DRAG, ENTITY_DRAG);
       const radius = ENTITY_SIZE * 0.45;
       body.setCircle(radius, (ENTITY_SIZE - radius * 2) / 2, (ENTITY_SIZE - radius * 2) / 2);
       const angle = rand() * Math.PI * 2;
@@ -254,12 +268,104 @@ private readonly cooldownExpires: Record<AbilityKey, number> = {
     }, duration);
   }
 
+  private fadeBuffGroup(sprites: Phaser.Physics.Arcade.Image[], duration: number): void {
+    sprites.forEach((sprite) => {
+      if (!sprite.active) return;
+      const startAlpha = sprite.alpha;
+      this.scene.tweens.add({
+        targets: sprite,
+        alpha: { from: Math.max(0.5, startAlpha - 0.25), to: Math.min(1, startAlpha + 0.15) },
+        duration: 220,
+        ease: Phaser.Math.Easing.Sine.InOut,
+        yoyo: true,
+        repeat: Math.max(0, Math.floor(duration / 220) - 1),
+      });
+      this.scene.time.delayedCall(duration, () => {
+        if (!sprite.active) return;
+        this.scene.tweens.add({
+          targets: sprite,
+          alpha: { from: sprite.alpha, to: startAlpha },
+          duration: 200,
+          ease: Phaser.Math.Easing.Sine.InOut,
+        });
+      });
+    });
+  }
+
+  private applyStatusVisuals(effect: 'slow' | 'buff' | 'shield', faction: FactionId, duration: number): void {
+    const sprites = this.groups[faction].getChildren() as Phaser.Physics.Arcade.Image[];
+    const iconKey = this.iconKeyForEffect(effect);
+    sprites.forEach((sprite) => {
+      if (!sprite.active) return;
+      if (iconKey) {
+        this.spawnStatusIcon(sprite, iconKey, duration);
+      }
+      if (effect === 'shield') {
+        auraGlow(this.scene, sprite, 0x91d9ff, 0.9, duration, this.getDetailLevel());
+      } else if (effect === 'buff' && !this.lowDetail) {
+        auraGlow(this.scene, sprite, 0xffa860, 0.6, 400, this.getDetailLevel());
+      }
+    });
+  }
+
+  private spawnStatusIcon(sprite: Phaser.Physics.Arcade.Image, textureKey: string, duration: number): void {
+    if (!this.scene.textures.exists(textureKey)) {
+      return;
+    }
+    const icon = this.scene.add
+      .image(sprite.x, sprite.y - sprite.displayHeight * 0.75, textureKey)
+      .setDepth(620)
+      .setScale(this.lowDetail ? 0.55 : 0.72)
+      .setAlpha(0);
+    const update = () => icon.setPosition(sprite.x, sprite.y - sprite.displayHeight * 0.75);
+    this.scene.events.on(Phaser.Scenes.Events.POST_UPDATE, update);
+    this.scene.tweens.add({
+      targets: icon,
+      alpha: { from: 0, to: 1 },
+      duration: 160,
+      ease: Phaser.Math.Easing.Sine.Out,
+    });
+    const teardown = () => {
+      this.scene.events.off(Phaser.Scenes.Events.POST_UPDATE, update);
+      if (!icon.scene) return;
+      this.scene.tweens.add({
+        targets: icon,
+        alpha: { from: icon.alpha, to: 0 },
+        duration: 180,
+        ease: Phaser.Math.Easing.Sine.In,
+        onComplete: () => icon.destroy(),
+      });
+    };
+    this.scene.time.delayedCall(duration, teardown);
+    sprite.once(Phaser.GameObjects.Events.DESTROY, teardown);
+  }
+
+  private iconKeyForEffect(effect: 'slow' | 'buff' | 'shield'): string | null {
+    switch (effect) {
+      case 'slow':
+        return 'status-slow';
+      case 'buff':
+        return 'status-buff';
+      case 'shield':
+        return 'status-shield';
+      default:
+        return null;
+    }
+  }
+
+  private getDetailLevel(): DetailLevel {
+    return this.lowDetail ? 'low' : 'high';
+  }
+
   private scaleGroup(faction: FactionId, factor: number): void {
     const children = this.groups[faction].getChildren() as Phaser.Physics.Arcade.Image[];
     children.forEach((sprite) => {
       const body = sprite.body as Phaser.Physics.Arcade.Body | null;
       if (!body) return;
       body.velocity.scale(factor);
+      const current = (sprite.getData('speedScale') as number) ?? 1;
+      const next = Phaser.Math.Clamp(current * factor, 0.25, 3);
+      sprite.setData('speedScale', next);
     });
   }
 
