@@ -198,7 +198,10 @@ private readonly cooldownExpires: Record<AbilityKey, number> = {
   }
 
   private totalEntities(): number {
-    return (Object.values(this.groups) as Phaser.Physics.Arcade.Group[]).reduce((sum, group) => sum + group.getLength(), 0);
+    return (Object.values(this.groups) as Phaser.Physics.Arcade.Group[]).reduce(
+      (sum, group) => sum + group.countActive(true),
+      0,
+    );
   }
 
   private createEntity(faction: FactionId, x: number, y: number): Phaser.Physics.Arcade.Image {

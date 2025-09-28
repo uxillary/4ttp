@@ -37,6 +37,10 @@ const EQUILIBRIUM_WINDOW = 60;
 const SPAWN_COUNT = 60;
 const ENTITY_CAP = 600;
 const WORLD_PADDING = 48;
+const INTERACTION_COOLDOWN_ATTACKER = 1400;
+const INTERACTION_COOLDOWN_DEFENDER = 900;
+const EARTH_FRAGMENT_CHANCE = 0.55;
+const WATER_DUPLICATION_CHANCE = 0.5;
 const COMBO_DEFINITIONS = [
   { sequence: ['2', '5'] as const, window: 4000, effect: 'freezeExplosion' as const },
   { sequence: ['3', '4'] as const, window: 3500, effect: 'resonantBulwark' as const },
@@ -332,6 +336,9 @@ export class Game extends Phaser.Scene {
 
   private spawnInitial(total: number): void {
     for (let i = 0; i < total; i += 1) {
+      if (!this.canSpawnAdditional(1)) {
+        break;
+      }
       const faction = FACTIONS[i % FACTIONS.length]!;
       const x = between(WORLD_PADDING, this.scale.width - WORLD_PADDING);
       const y = between(WORLD_PADDING, this.scale.height - WORLD_PADDING);
@@ -538,18 +545,43 @@ export class Game extends Phaser.Scene {
     attackerFaction: FactionId,
     defenderFaction: FactionId,
   ): void {
+    if (!this.canTriggerInteraction(attacker, defender)) {
+      return;
+    }
     const impact = new Phaser.Math.Vector2(defender.x, defender.y);
-    if (attackerFaction === 'Fire' && defenderFaction === 'Earth') {
+    if (
+      attackerFaction === 'Fire' &&
+      defenderFaction === 'Earth' &&
+      this.canSpawnAdditional(1) &&
+      Phaser.Math.FloatBetween(0, 1) < EARTH_FRAGMENT_CHANCE
+    ) {
       this.fireSplits += this.spawnEarthFragments(impact);
-    } else if (attackerFaction === 'Water' && defenderFaction === 'Fire') {
+    } else if (
+      attackerFaction === 'Water' &&
+      defenderFaction === 'Fire' &&
+      this.canSpawnAdditional(1) &&
+      Phaser.Math.FloatBetween(0, 1) < WATER_DUPLICATION_CHANCE
+    ) {
       this.waterDuplications += this.spawnWaterDroplets(attacker, impact);
     } else if (attackerFaction === 'Earth' && defenderFaction === 'Water') {
       this.earthShieldBursts += 1;
       this.applyEarthShield(attacker);
     }
-    if (Phaser.Math.FloatBetween(0, 1) < 0.08) {
+    if (Phaser.Math.FloatBetween(0, 1) < 0.05) {
       this.triggerCritical(attackerFaction, impact);
     }
+  }
+
+  private canTriggerInteraction(attacker: Phaser.Physics.Arcade.Image, defender: Phaser.Physics.Arcade.Image): boolean {
+    const now = this.time.now;
+    const attackerReady = (attacker.getData('nextInteraction') as number | undefined) ?? 0;
+    const defenderGuarded = (defender.getData('interactionGuard') as number | undefined) ?? 0;
+    if (now < attackerReady || now < defenderGuarded) {
+      return false;
+    }
+    attacker.setData('nextInteraction', now + INTERACTION_COOLDOWN_ATTACKER);
+    defender.setData('interactionGuard', now + INTERACTION_COOLDOWN_DEFENDER);
+    return true;
   }
 
   private comboFreezeExplosion(point: Phaser.Math.Vector2): void {
@@ -607,6 +639,9 @@ export class Game extends Phaser.Scene {
   private comboTerraEscort(point: Phaser.Math.Vector2, faction: FactionId): void {
     const count = 2;
     for (let i = 0; i < count; i += 1) {
+      if (!this.canSpawnAdditional(1)) {
+        break;
+      }
       const angle = (Math.PI * 2 * i) / count;
       const offset = new Phaser.Math.Vector2().setToPolar(angle, 40);
       const sprite = this.spawnEntity(faction, Phaser.Math.Clamp(point.x + offset.x, WORLD_PADDING, this.scale.width - WORLD_PADDING), Phaser.Math.Clamp(point.y + offset.y, WORLD_PADDING, this.scale.height - WORLD_PADDING));
@@ -644,8 +679,15 @@ export class Game extends Phaser.Scene {
   }
 
   private spawnEarthFragments(origin: Phaser.Math.Vector2): number {
-    const fragments = Phaser.Math.Between(2, 3);
+    if (!this.canSpawnAdditional(1)) {
+      return 0;
+    }
+    const fragments = Phaser.Math.Between(1, 2);
+    let spawned = 0;
     for (let i = 0; i < fragments; i += 1) {
+      if (!this.canSpawnAdditional(1)) {
+        break;
+      }
       const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
       const distance = Phaser.Math.FloatBetween(12, 30);
       const offset = new Phaser.Math.Vector2().setToPolar(angle, distance);
@@ -677,13 +719,21 @@ export class Game extends Phaser.Scene {
         burst(this, sprite.x, sprite.y, this.palette.Earth, 'small');
         sprite.destroy();
       });
+      spawned += 1;
     }
-    return fragments;
+    return spawned;
   }
 
   private spawnWaterDroplets(attacker: Phaser.Physics.Arcade.Image, origin: Phaser.Math.Vector2): number {
-    const droplets = Phaser.Math.Between(1, 2);
+    if (!this.canSpawnAdditional(1)) {
+      return 0;
+    }
+    let spawned = 0;
+    const droplets = 1 + (this.canSpawnAdditional(1) && Phaser.Math.FloatBetween(0, 1) < 0.35 ? 1 : 0);
     for (let i = 0; i < droplets; i += 1) {
+      if (!this.canSpawnAdditional(1)) {
+        break;
+      }
       const offset = new Phaser.Math.Vector2().setToPolar(
         Phaser.Math.FloatBetween(0, Math.PI * 2),
         Phaser.Math.FloatBetween(10, 26),
@@ -697,8 +747,9 @@ export class Game extends Phaser.Scene {
         const direction = new Phaser.Math.Vector2(attacker.x - x, attacker.y - y).normalize();
         body.velocity.add(direction.scale(60));
       }
+      spawned += 1;
     }
-    return droplets;
+    return spawned;
   }
 
   private applyEarthShield(anchor: Phaser.Physics.Arcade.Image): void {
@@ -1043,6 +1094,16 @@ export class Game extends Phaser.Scene {
         ease: Phaser.Math.Easing.Back.Out,
       });
     }
+    const now = this.time.now;
+    const existingNext = (sprite.getData('nextInteraction') as number | undefined) ?? 0;
+    const existingGuard = (sprite.getData('interactionGuard') as number | undefined) ?? 0;
+    if (fresh) {
+      sprite.setData('nextInteraction', Math.max(now + 320, existingNext));
+      sprite.setData('interactionGuard', Math.max(now + 200, existingGuard));
+    } else {
+      sprite.setData('nextInteraction', Math.max(now + 240, existingNext));
+      sprite.setData('interactionGuard', Math.max(now + 160, existingGuard));
+    }
     sprite.setData('baseSpeed', SPEED[faction] * BASE_SPEED);
     if (faction === 'Water' && typeof sprite.getData('wavePhase') !== 'number') {
       sprite.setData('wavePhase', Phaser.Math.FloatBetween(0, Math.PI * 2));
@@ -1172,6 +1233,17 @@ export class Game extends Phaser.Scene {
     }
     const newLength = Phaser.Math.Linear(current, baseSpeed, lerp);
     body.velocity.setLength(newLength);
+  }
+
+  private totalActiveEntities(): number {
+    return (Object.values(this.groups) as Phaser.Physics.Arcade.Group[]).reduce(
+      (sum, group) => sum + group.countActive(true),
+      0,
+    );
+  }
+
+  private canSpawnAdditional(amount: number): boolean {
+    return this.totalActiveEntities() + amount <= ENTITY_CAP;
   }
 
   private refreshAndPublish(): void {
