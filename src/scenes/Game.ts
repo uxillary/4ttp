@@ -83,7 +83,7 @@ export class Game extends Phaser.Scene {
   private pendingSeed: string | null = null;
   private scanlineOverlay?: Phaser.GameObjects.TileSprite;
   private backgroundGrid?: Phaser.GameObjects.Grid;
-  private speedLevels: number[] = [0.75, 1, 1.35];
+  private speedLevels: number[] = [0.6, 0.85, 1.1];
   private speedIndex = 1;
   private currentSpeed = 1;
   private comboHistory: Array<{ key: AbilityKey; time: number; data?: ComboContext }> = [];
@@ -647,12 +647,12 @@ export class Game extends Phaser.Scene {
     const fragments = Phaser.Math.Between(2, 3);
     for (let i = 0; i < fragments; i += 1) {
       const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
-      const distance = Phaser.Math.FloatBetween(18, 42);
+      const distance = Phaser.Math.FloatBetween(12, 30);
       const offset = new Phaser.Math.Vector2().setToPolar(angle, distance);
       const x = Phaser.Math.Clamp(origin.x + offset.x, WORLD_PADDING, this.scale.width - WORLD_PADDING);
       const y = Phaser.Math.Clamp(origin.y + offset.y, WORLD_PADDING, this.scale.height - WORLD_PADDING);
       const sprite = this.spawnEntity('Earth', x, y);
-      sprite.setDisplaySize(ENTITY_SIZE * 0.75, ENTITY_SIZE * 0.75);
+      sprite.setDisplaySize(ENTITY_SIZE * 0.85, ENTITY_SIZE * 0.85);
       sprite.setAlpha(0.9);
       sprite.setData('fragment', true);
       sprite.setData('baseSpeed', SPEED.Earth * BASE_SPEED * 0.85);
@@ -661,7 +661,7 @@ export class Game extends Phaser.Scene {
         const radius = sprite.displayWidth * 0.45;
         body.setCircle(radius, (sprite.displayWidth - radius * 2) / 2, (sprite.displayHeight - radius * 2) / 2);
         const fragmentSpeed = (sprite.getData('baseSpeed') as number) * 0.9;
-        body.maxVelocity.set(fragmentSpeed * 1.3, fragmentSpeed * 1.3);
+        body.maxVelocity.set(fragmentSpeed * 1.25, fragmentSpeed * 1.25);
         body.velocity.setLength(fragmentSpeed);
         body.velocity.rotate(Phaser.Math.FloatBetween(-0.6, 0.6));
       }
@@ -684,7 +684,10 @@ export class Game extends Phaser.Scene {
   private spawnWaterDroplets(attacker: Phaser.Physics.Arcade.Image, origin: Phaser.Math.Vector2): number {
     const droplets = Phaser.Math.Between(1, 2);
     for (let i = 0; i < droplets; i += 1) {
-      const offset = new Phaser.Math.Vector2().setToPolar(Phaser.Math.FloatBetween(0, Math.PI * 2), Phaser.Math.FloatBetween(12, 36));
+      const offset = new Phaser.Math.Vector2().setToPolar(
+        Phaser.Math.FloatBetween(0, Math.PI * 2),
+        Phaser.Math.FloatBetween(10, 26),
+      );
       const x = Phaser.Math.Clamp(origin.x + offset.x, WORLD_PADDING, this.scale.width - WORLD_PADDING);
       const y = Phaser.Math.Clamp(origin.y + offset.y, WORLD_PADDING, this.scale.height - WORLD_PADDING);
       const sprite = this.spawnEntity('Water', x, y);
@@ -1129,7 +1132,7 @@ export class Game extends Phaser.Scene {
     if (!sprite.active) return;
     const body = sprite.body as Phaser.Physics.Arcade.Body | null;
     if (!body) return;
-    const jitter = 45;
+    const jitter = 32;
     body.velocity.x += Phaser.Math.FloatBetween(-jitter, jitter) * dt;
     body.velocity.y += Phaser.Math.FloatBetween(-jitter, jitter) * dt;
     this.maintainBaseSpeed(sprite, 0.25);
@@ -1143,7 +1146,7 @@ export class Game extends Phaser.Scene {
     if (typeof phase !== 'number') {
       phase = Phaser.Math.FloatBetween(0, Math.PI * 2);
     }
-    phase += dt * 3.2;
+    phase += dt * 2.4;
     sprite.setData('wavePhase', phase);
     body.velocity.rotate(Math.sin(phase) * 0.05);
     this.maintainBaseSpeed(sprite, 0.08);

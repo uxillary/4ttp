@@ -302,7 +302,11 @@ Seed: ${summary.seed}`);
       const cooldown = this.add.text(0, 34, '', { fontFamily: FONT_FAMILY, fontSize: '13px', color: '#6fa4d9' }).setOrigin(0.5);
       container.add([background, keycap, keycapLabel, label, detail, cooldown]);
       container.setSize(132, 58);
-      container.setInteractive(new Phaser.Geom.Rectangle(-66, -29, 132, 58), Phaser.Geom.Rectangle.Contains);
+      container.setInteractive({
+        hitArea: new Phaser.Geom.Rectangle(-66, -29, 132, 58),
+        hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+        cursor: 'pointer',
+      });
       container.on('pointerover', () => {
         background.setTint(0x174264);
         keycap.setTint(0x22658c);
@@ -317,8 +321,24 @@ Seed: ${summary.seed}`);
           this.hideTooltip();
         }
       });
-      container.on('pointerdown', () => {
+      container.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        const nativeEvent = pointer.event as PointerEvent | MouseEvent | TouchEvent | undefined;
+        nativeEvent?.stopPropagation?.();
+        nativeEvent?.stopImmediatePropagation?.();
+      });
+      container.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+        const nativeEvent = pointer.event as PointerEvent | MouseEvent | TouchEvent | undefined;
+        nativeEvent?.stopPropagation?.();
+        nativeEvent?.stopImmediatePropagation?.();
+        if (nativeEvent && 'button' in nativeEvent && nativeEvent.button !== 0) {
+          return;
+        }
         this.events.emit('ability-clicked', key);
+      });
+      container.on('pointerupoutside', (pointer: Phaser.Input.Pointer) => {
+        const nativeEvent = pointer.event as PointerEvent | MouseEvent | TouchEvent | undefined;
+        nativeEvent?.stopPropagation?.();
+        nativeEvent?.stopImmediatePropagation?.();
       });
       this.abilityBar.add(container);
       this.abilityButtons[key] = { container, background, keycap, keycapLabel, label, detail, cooldown, meta };
