@@ -2,6 +2,8 @@
 
 Seeded Phaser 3 prototype for the Four-Tier Temporal Protocol.
 
+Read the [gameplay overview](docs/) for a scene-by-scene breakdown of how the Boot, Game, and UI layers interact.
+
 ## Controls
 
 - Mouse / `1`: Spawn weakest faction at the cursor
