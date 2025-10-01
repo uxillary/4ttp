@@ -32,6 +32,11 @@ type ComboContext = {
 
 type UiToggleKey = 'audio' | 'hud' | 'palette' | 'speed' | 'pause' | 'info';
 
+type HudLayoutEvent = {
+  safeMargin: number;
+  statusBarBounds: { left: number; right: number; bottom: number };
+};
+
 const MUTED_KEY = "muted";
 const COLORBLIND_KEY = "colorblind";
 const BEST_SCORE_KEY: Record<Mode, string> = {
@@ -64,7 +69,6 @@ const BACKGROUND_UNSTABLE = Phaser.Display.Color.ValueToColor(0xff6347);
 const BACKGROUND_STABLE = Phaser.Display.Color.ValueToColor(0x55e6a5);
 const MINIMAP_SIZE = 168;
 const MINIMAP_PADDING = 18;
-const MINIMAP_TOP_OFFSET = 252;
 const ENTITY_TRAIL_CONFIG: Record<FactionId, { tint: number; lifespan: number }> = {
   Fire: { tint: 0xff5c43, lifespan: 220 },
   Water: { tint: 0x55e6a5, lifespan: 260 },
@@ -132,6 +136,8 @@ export class Game extends Phaser.Scene {
   private lowDetailFx = false;
   private miniMapContainer?: Phaser.GameObjects.Container;
   private miniMapGraphics?: Phaser.GameObjects.Graphics;
+  private hudLayout: HudLayoutEvent | null = null;
+  private nextEntityId = 1;
   private totalEntityCount = 0;
   private readonly handleEntityCreated = (sprite: Phaser.Physics.Arcade.Image, faction: FactionId) => {
     this.decorateFactionSprite(sprite, faction, true);
@@ -172,8 +178,10 @@ export class Game extends Phaser.Scene {
 
     this.createMiniMap();
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
+    this.game.events.on('hud-layout', this.handleHudLayout, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
+      this.game.events.off('hud-layout', this.handleHudLayout, this);
     });
 
     this.spawnInitial(SPAWN_COUNT);
@@ -451,7 +459,40 @@ export class Game extends Phaser.Scene {
   private spawnEntity(faction: FactionId, x: number, y: number): Phaser.Physics.Arcade.Image {
     const sprite = this.interventions.spawnFaction(faction, x, y);
     sprite.setDepth(5);
+    const id = this.nextEntityId++;
+    sprite.setData('entityId', id);
     return sprite;
+  }
+
+  private describeEntity(sprite: Phaser.Physics.Arcade.Image): string {
+    const id = (sprite.getData('entityId') as number | undefined) ?? 0;
+    const faction = (sprite.getData('faction') as FactionId | undefined) ?? 'Unknown';
+    return id ? `Entity#${id}:${faction}` : `Entity:${faction}`;
+  }
+
+  private logHitEvent(
+    attacker: Phaser.Physics.Arcade.Image,
+    defender: Phaser.Physics.Arcade.Image,
+    rule: string,
+  ): void {
+    logEvent({
+      t: 'hit',
+      at: this.elapsed,
+      src: this.describeEntity(attacker),
+      dst: this.describeEntity(defender),
+      amount: 1,
+      rule,
+    });
+  }
+
+  private logKillEvent(source: string, sprite: Phaser.Physics.Arcade.Image, rule: string): void {
+    logEvent({
+      t: 'kill',
+      at: this.elapsed,
+      src: source,
+      dst: this.describeEntity(sprite),
+      rule,
+    });
   }
 
   private setupCollisions(): void {
@@ -478,9 +519,11 @@ export class Game extends Phaser.Scene {
       return;
     }
     if (beats(factionA, factionB)) {
+      this.logHitEvent(spriteA, spriteB, `${factionA} overcomes ${factionB}`);
       this.resolveElementalInteraction(spriteA, spriteB, factionA, factionB);
       this.convert(spriteB, factionA);
     } else if (beats(factionB, factionA)) {
+      this.logHitEvent(spriteB, spriteA, `${factionB} overcomes ${factionA}`);
       this.resolveElementalInteraction(spriteB, spriteA, factionB, factionA);
       this.convert(spriteA, factionB);
     }
@@ -854,7 +897,10 @@ export class Game extends Phaser.Scene {
       .filter((entry) => entry.dist <= radiusSq)
       .sort((a, b) => a.dist - b.dist);
     const extra = candidates.slice(0, 4);
-    extra.forEach(({ sprite }) => sprite.destroy());
+    extra.forEach(({ sprite }) => {
+      this.logKillEvent('Combo: Overclock Detonation', sprite, 'Overclock detonation');
+      sprite.destroy();
+    });
     const shockwave = candidates.slice(4);
     shockwave.forEach(({ sprite }) => {
       if (!sprite.active) return;
@@ -912,6 +958,7 @@ export class Game extends Phaser.Scene {
       this.time.delayedCall(6000, () => {
         if (!sprite.active) return;
         burst(this, sprite.x, sprite.y, this.palette.Earth, 'small');
+        this.logKillEvent('System: Fragment Decay', sprite, 'Fragment dissipated');
         sprite.destroy();
       });
       spawned += 1;
@@ -1530,7 +1577,7 @@ export class Game extends Phaser.Scene {
       this.miniMapContainer.destroy(true);
     }
     const container = this.add
-      .container(MINIMAP_PADDING, MINIMAP_TOP_OFFSET)
+      .container(0, 0)
       .setDepth(58)
       .setScrollFactor(0);
     const background = this.add
@@ -1541,6 +1588,36 @@ export class Game extends Phaser.Scene {
     container.add([background, graphics]);
     this.miniMapContainer = container;
     this.miniMapGraphics = graphics;
+    this.positionMiniMap();
+  }
+
+  private handleHudLayout = (layout: HudLayoutEvent): void => {
+    this.hudLayout = layout;
+    this.positionMiniMap();
+  };
+
+  private positionMiniMap(): void {
+    if (!this.miniMapContainer) {
+      return;
+    }
+    const containerWidth = MINIMAP_SIZE + 16;
+    const containerHeight = MINIMAP_SIZE + 16;
+    const width = this.scale.width;
+    const height = this.scale.height;
+    let x = width - containerWidth - MINIMAP_PADDING;
+    let y = MINIMAP_PADDING;
+    if (this.hudLayout) {
+      const { safeMargin, statusBarBounds } = this.hudLayout;
+      const minX = safeMargin;
+      const maxX = width - containerWidth - safeMargin;
+      const minY = safeMargin;
+      const maxY = height - containerHeight - safeMargin;
+      const alignedX = statusBarBounds.right - containerWidth;
+      const alignedY = statusBarBounds.bottom + 16;
+      x = Phaser.Math.Clamp(alignedX, minX, maxX);
+      y = Phaser.Math.Clamp(alignedY, minY, maxY);
+    }
+    this.miniMapContainer.setPosition(x, y);
   }
 
   private updateMiniMap(): void {
@@ -1579,9 +1656,7 @@ export class Game extends Phaser.Scene {
       this.scanlineOverlay.setSize(width, height);
       this.scanlineOverlay.setPosition(width / 2, height / 2);
     }
-    const availableHeight = height - MINIMAP_SIZE - MINIMAP_PADDING;
-    const y = Phaser.Math.Clamp(MINIMAP_TOP_OFFSET, MINIMAP_PADDING, availableHeight);
-    this.miniMapContainer?.setPosition(MINIMAP_PADDING, y);
+    this.positionMiniMap();
   }
 
   private applyProgressiveDrift(dt: number): void {
@@ -1639,16 +1714,17 @@ export class Game extends Phaser.Scene {
     if (!sprite) {
       return;
     }
-    this.tweens.add({
-      targets: sprite,
-      alpha: { from: sprite.alpha, to: 0 },
-      scale: { from: 1, to: 0.4 },
-      duration: 260,
-      ease: Phaser.Math.Easing.Sine.In,
-      onComplete: () => {
-        sprite.destroy();
-      },
-    });
+      this.tweens.add({
+        targets: sprite,
+        alpha: { from: sprite.alpha, to: 0 },
+        scale: { from: 1, to: 0.4 },
+        duration: 260,
+        ease: Phaser.Math.Easing.Sine.In,
+        onComplete: () => {
+          this.logKillEvent('System: Equilibrium Guard', sprite, 'Population trim');
+          sprite.destroy();
+        },
+      });
   }
 
   private totalActiveEntities(): number {
