@@ -179,9 +179,9 @@ private readonly cooldownExpires: Record<AbilityKey, number> = {
     return this.createEntity(faction, x, y);
   }
 
-  nuke(pointer: Phaser.Math.Vector2): boolean {
+  nuke(pointer: Phaser.Math.Vector2): number {
     if (!this.consumeCooldown('5')) {
-      return false;
+      return 0;
     }
     const sprites = this.collectSprites();
     const within = sprites
@@ -192,7 +192,7 @@ private readonly cooldownExpires: Record<AbilityKey, number> = {
       .map((entry) => entry.sprite);
     within.forEach((sprite) => sprite.destroy());
     burst(this.scene, pointer.x, pointer.y, NUKE_TINT, 'large');
-    return within.length > 0;
+    return within.length;
   }
 
   private collectSprites(): Phaser.Physics.Arcade.Image[] {

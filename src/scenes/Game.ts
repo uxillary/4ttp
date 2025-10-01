@@ -5,6 +5,7 @@ import { beats } from "../core/rules";
 import { BalanceMeter, computeEquilibrium, type FactionCounts } from "../systems/balanceMeter";
 import {
   Interventions,
+  EFFECT_DURATIONS_MS,
   type CooldownState,
   type AbilityKey,
 } from "../systems/interventions";
@@ -16,6 +17,7 @@ import { getBool, setBool, getNumber, setNumber } from "../utils/save";
 import { UI } from "./UI";
 import { burst, pulse, shieldFx } from "../utils/fx";
 import type { GameTickPayload, GameEndSummary } from "./types";
+import { logEvent } from "../systems/log";
 
 type GameInitData = {
   mode?: Mode;
@@ -62,10 +64,25 @@ const BACKGROUND_UNSTABLE = Phaser.Display.Color.ValueToColor(0xff6347);
 const BACKGROUND_STABLE = Phaser.Display.Color.ValueToColor(0x55e6a5);
 const MINIMAP_SIZE = 168;
 const MINIMAP_PADDING = 18;
+const MINIMAP_TOP_OFFSET = 252;
 const ENTITY_TRAIL_CONFIG: Record<FactionId, { tint: number; lifespan: number }> = {
   Fire: { tint: 0xff5c43, lifespan: 220 },
   Water: { tint: 0x55e6a5, lifespan: 260 },
   Earth: { tint: 0xc2a97a, lifespan: 320 },
+};
+
+const SPAWN_KIND_MAP: Record<FactionId, 'Thermal' | 'Liquid' | 'Core'> = {
+  Fire: 'Thermal',
+  Water: 'Liquid',
+  Earth: 'Core',
+};
+
+const COMBO_LABEL: Record<ComboEffect, string> = {
+  freezeExplosion: 'Freeze Explosion',
+  resonantBulwark: 'Resonant Bulwark',
+  terraEscort: 'Terra Escort',
+  surgeBloom: 'Surge Bloom',
+  overclockDetonation: 'Overclock Detonation',
 };
 
 export class Game extends Phaser.Scene {
@@ -543,6 +560,7 @@ export class Game extends Phaser.Scene {
       this.onAbilityUsed();
       playSfx('spawn');
       this.registerAbilityUse('1', { point: point.clone(), faction });
+      logEvent({ t: 'spawn', at: this.elapsed, kind: SPAWN_KIND_MAP[faction], n: 1 });
       this.refreshAndPublish();
     }
   }
@@ -555,6 +573,13 @@ export class Game extends Phaser.Scene {
       this.onAbilityUsed();
       playSfx('slow');
       this.registerAbilityUse('2', { faction });
+      logEvent({
+        t: 'buff',
+        at: this.elapsed,
+        who: `Faction:${faction}`,
+        kind: 'Slow',
+        dur: EFFECT_DURATIONS_MS.slow / 1000,
+      });
     }
   }
 
@@ -566,6 +591,13 @@ export class Game extends Phaser.Scene {
       this.onAbilityUsed();
       playSfx('buff');
       this.registerAbilityUse('3', { faction });
+      logEvent({
+        t: 'buff',
+        at: this.elapsed,
+        who: `Faction:${faction}`,
+        kind: 'Buff',
+        dur: EFFECT_DURATIONS_MS.buff / 1000,
+      });
     }
   }
 
@@ -578,19 +610,27 @@ export class Game extends Phaser.Scene {
       playSfx('shield');
       const count = this.groups[faction].countActive(true);
       this.registerAbilityUse('4', { faction, count });
+      logEvent({
+        t: 'buff',
+        at: this.elapsed,
+        who: `Faction:${faction}`,
+        kind: 'Shield',
+        dur: EFFECT_DURATIONS_MS.shield / 1000,
+      });
       this.refreshAndPublish();
     }
   }
 
   private tryNukeAt(point: Phaser.Math.Vector2): void {
     if (!this.canAct()) return;
-    const success = this.interventions.nuke(point);
-    if (success) {
+    const purged = this.interventions.nuke(point);
+    if (purged > 0) {
       this.interventionsUsed += 1;
       this.nukeUsed = true;
       this.onAbilityUsed();
       playSfx('nuke');
       this.registerAbilityUse('5', { point: point.clone() });
+      logEvent({ t: 'system', at: this.elapsed, msg: `Nuke purged ${purged} entities` });
       this.refreshAndPublish();
     }
   }
@@ -623,6 +663,10 @@ export class Game extends Phaser.Scene {
   }
 
   private triggerCombo(effect: ComboEffect, first: ComboContext, second: ComboContext): void {
+    const label = COMBO_LABEL[effect];
+    if (label) {
+      logEvent({ t: 'system', at: this.elapsed, msg: `Combo triggered: ${label}` });
+    }
     switch (effect) {
       case 'freezeExplosion':
         this.comboFreezeExplosion(second.point ?? first.point ?? this.pointerWorld());
@@ -872,6 +916,9 @@ export class Game extends Phaser.Scene {
       });
       spawned += 1;
     }
+    if (spawned > 0) {
+      logEvent({ t: 'spawn', at: this.elapsed, kind: SPAWN_KIND_MAP.Earth, n: spawned });
+    }
     return spawned;
   }
 
@@ -899,6 +946,9 @@ export class Game extends Phaser.Scene {
         body.velocity.add(direction.scale(60));
       }
       spawned += 1;
+    }
+    if (spawned > 0) {
+      logEvent({ t: 'spawn', at: this.elapsed, kind: SPAWN_KIND_MAP.Water, n: spawned });
     }
     return spawned;
   }
@@ -1479,7 +1529,10 @@ export class Game extends Phaser.Scene {
     if (this.miniMapContainer) {
       this.miniMapContainer.destroy(true);
     }
-    const container = this.add.container(MINIMAP_PADDING, MINIMAP_PADDING).setDepth(52).setScrollFactor(0);
+    const container = this.add
+      .container(MINIMAP_PADDING, MINIMAP_TOP_OFFSET)
+      .setDepth(58)
+      .setScrollFactor(0);
     const background = this.add
       .rectangle(0, 0, MINIMAP_SIZE + 16, MINIMAP_SIZE + 16, 0x041425, 0.86)
       .setOrigin(0, 0)
@@ -1526,7 +1579,9 @@ export class Game extends Phaser.Scene {
       this.scanlineOverlay.setSize(width, height);
       this.scanlineOverlay.setPosition(width / 2, height / 2);
     }
-    this.miniMapContainer?.setPosition(MINIMAP_PADDING, MINIMAP_PADDING);
+    const availableHeight = height - MINIMAP_SIZE - MINIMAP_PADDING;
+    const y = Phaser.Math.Clamp(MINIMAP_TOP_OFFSET, MINIMAP_PADDING, availableHeight);
+    this.miniMapContainer?.setPosition(MINIMAP_PADDING, y);
   }
 
   private applyProgressiveDrift(dt: number): void {
