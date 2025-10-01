@@ -19,13 +19,16 @@ export const HUD_MONO_FONT_FAMILY =
  * Call setHudScale(1.0–1.5) to globally scale panel padding, typography, and hit areas.
  */
 
-let hudScale = 1;
+export const HUD_SCALE_MIN = 1;
+export const HUD_SCALE_MAX = 1.5;
+
+let hudScale = HUD_SCALE_MIN;
 const listeners = new Set<(scale: number) => void>();
 
 export const getHudScale = (): number => hudScale;
 
 export const setHudScale = (scale: number): void => {
-  const clamped = Math.min(1.5, Math.max(1, scale));
+  const clamped = Math.min(HUD_SCALE_MAX, Math.max(HUD_SCALE_MIN, scale));
   if (Math.abs(clamped - hudScale) < 0.001) {
     return;
   }

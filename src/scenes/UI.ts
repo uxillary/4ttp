@@ -77,8 +77,21 @@ export class UI extends Phaser.Scene {
   private statusToggles: Record<ToggleKey, StatusToggle> = {} as Record<ToggleKey, StatusToggle>;
   private hotbarDebugOverlay?: Phaser.GameObjects.Graphics;
   private tooltip!: Phaser.GameObjects.Container;
+  private tooltipBackground!: Phaser.GameObjects.Image;
+  private tooltipAccent!: Phaser.GameObjects.Rectangle;
   private tooltipTitle!: Phaser.GameObjects.Text;
   private tooltipText!: Phaser.GameObjects.Text;
+  private tooltipBase = {
+    width: 0,
+    height: 0,
+    accentWidth: 0,
+    accentHeight: 0,
+    accentY: -40,
+    titleY: -56,
+    textY: -12,
+    wrap: 240,
+    spacing: 6,
+  };
   private textTooltip!: Phaser.GameObjects.Container;
   private textTooltipBackground!: Phaser.GameObjects.Graphics;
   private textTooltipLabel!: Phaser.GameObjects.Text;
@@ -533,8 +546,8 @@ Seed: ${summary.seed}`);
   }
   private createTooltip(): void {
     this.tooltip = this.add.container(0, 0).setDepth(40).setVisible(false).setScrollFactor(0);
-    const bg = this.add.image(0, 0, 'ui-tooltip').setOrigin(0.5).setAlpha(0.96);
-    const accent = this.add.rectangle(0, -40, 220, 2, 0x1f81ce, 0.32).setOrigin(0.5);
+    this.tooltipBackground = this.add.image(0, 0, 'ui-tooltip').setOrigin(0.5).setAlpha(0.96);
+    this.tooltipAccent = this.add.rectangle(0, -40, 220, 2, 0x1f81ce, 0.32).setOrigin(0.5);
     this.tooltipTitle = this.add.text(0, -56, '', {
       fontFamily: HUD_FONT_FAMILY,
       fontSize: '18px',
@@ -549,8 +562,37 @@ Seed: ${summary.seed}`);
       wordWrap: { width: 240 },
       lineSpacing: 6,
     }).setOrigin(0.5, 0);
-    this.tooltip.add([bg, accent, this.tooltipTitle, this.tooltipText]);
+    this.tooltip.add([this.tooltipBackground, this.tooltipAccent, this.tooltipTitle, this.tooltipText]);
+    this.tooltipBase = {
+      width: this.tooltipBackground.width,
+      height: this.tooltipBackground.height,
+      accentWidth: this.tooltipAccent.width,
+      accentHeight: this.tooltipAccent.height,
+      accentY: this.tooltipAccent.y,
+      titleY: this.tooltipTitle.y,
+      textY: this.tooltipText.y,
+      wrap: (this.tooltipText.style.wordWrapWidth as number) ?? 240,
+      spacing: this.tooltipText.lineSpacing,
+    };
+    this.updateTooltipLayout(getHudScale());
     this.createLabelTooltip();
+  }
+  private updateTooltipLayout(scale: number): void {
+    if (!this.tooltipBackground || !this.tooltipAccent) {
+      return;
+    }
+    const base = this.tooltipBase;
+    const width = base.width * scale;
+    const height = base.height * scale;
+    this.tooltipBackground.setDisplaySize(width, height);
+    this.tooltipAccent.setSize(base.accentWidth * scale, Math.max(1, base.accentHeight * scale));
+    this.tooltipAccent.setPosition(0, base.accentY * scale);
+    this.tooltipTitle.setFontSize(18 * scale);
+    this.tooltipTitle.setPosition(0, base.titleY * scale);
+    this.tooltipText.setFontSize(14 * scale);
+    this.tooltipText.setPosition(0, base.textY * scale);
+    this.tooltipText.setWordWrapWidth(base.wrap * scale);
+    this.tooltipText.setLineSpacing(base.spacing * scale);
   }
   private createLabelTooltip(): void {
     this.textTooltip = this.add.container(0, 0).setDepth(48).setVisible(false).setScrollFactor(0);
@@ -672,7 +714,10 @@ Seed: ${summary.seed}`);
     this.tooltipKey = key;
     const worldX = this.abilityBar.x + button.container.x;
     const worldY = this.abilityBar.y + button.container.y;
-    this.tooltip.setPosition(worldX, worldY - 100);
+    const scale = getHudScale();
+    this.updateTooltipLayout(scale);
+    const offsetY = 100 * scale;
+    this.tooltip.setPosition(worldX, worldY - offsetY);
     this.tooltipTitle.setText(meta.name.toUpperCase());
     const lines: string[] = [meta.description, meta.hint];
     const cooldownSeconds = (COOLDOWNS_MS[key] ?? 0) / 1000;
@@ -759,9 +804,9 @@ Seed: ${summary.seed}`);
     cursorY += this.equilibriumText.height + scaleValue(10);
 
     const barWidth = width - paddingX * 2;
-    this.balanceBar.setPosition(this.hud.x + paddingX, this.hud.y + cursorY);
-    this.balanceBar.setScale(scale, scale);
     const barHeight = 10 * scale;
+    this.balanceBar.setPosition(this.hud.x + paddingX, this.hud.y + cursorY);
+    this.balanceBar.setSize(barWidth, barHeight);
     cursorY += barHeight + paddingY;
 
     const height = cursorY;
@@ -1043,7 +1088,7 @@ Seed: ${summary.seed}`);
 
     this.layoutStatusBar(hudScale, width, safeMargin);
     this.layoutAbilityBar(hudScale, width, height, safeMargin);
-    this.tooltip.setScale(hudScale);
+    this.updateTooltipLayout(hudScale);
     if (this.verboseCli) {
       this.verboseCli.setHudScale(hudScale);
       this.positionCli(hudScale, width, height, safeMargin);

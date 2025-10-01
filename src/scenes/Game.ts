@@ -149,6 +149,9 @@ export class Game extends Phaser.Scene {
   private hudLayout: HudLayoutEvent | null = null;
   private nextEntityId = 1;
   private totalEntityCount = 0;
+  private altModeActive = false;
+  private baseCameraZoom = 1;
+  private readonly altModeZoom = 0.92;
   private readonly handleEntityCreated = (sprite: Phaser.Physics.Arcade.Image, faction: FactionId) => {
     this.decorateFactionSprite(sprite, faction, true);
   };
@@ -417,6 +420,9 @@ export class Game extends Phaser.Scene {
     this.globalEntityScale = 1;
     this.lowDetailFx = false;
     this.totalEntityCount = 0;
+    this.altModeActive = false;
+    this.baseCameraZoom = 1;
+    this.cameras.main.setZoom(1);
   }
 
   private initializeSettings(): void {
@@ -428,6 +434,7 @@ export class Game extends Phaser.Scene {
     this.colorblind = getBool(COLORBLIND_KEY, this.colorblind);
     setMutedAudio(this.muted);
     this.palette = getPalette(this.colorblind);
+    this.toggleAltMode(this.colorblind);
     if (this.uiReady) {
       this.ui.setMutedAndColorblind(this.muted, this.colorblind);
     }
@@ -1127,6 +1134,25 @@ export class Game extends Phaser.Scene {
     this.backgroundGrid.setAlpha(fillAlpha);
   }
 
+  private toggleAltMode(on: boolean): void {
+    const camera = this.cameras.main;
+    if (this.altModeActive === on) {
+      if (!on) {
+        camera.setZoom(this.baseCameraZoom);
+      }
+      return;
+    }
+    if (on) {
+      if (!this.altModeActive) {
+        this.baseCameraZoom = camera.zoom;
+      }
+      camera.setZoom(this.altModeZoom);
+    } else {
+      camera.setZoom(this.baseCameraZoom);
+    }
+    this.altModeActive = on;
+  }
+
   private toggleMute(): void {
     this.muted = !this.muted;
     setMutedAudio(this.muted);
@@ -1140,6 +1166,7 @@ export class Game extends Phaser.Scene {
     this.colorblind = !this.colorblind;
     setBool(COLORBLIND_KEY, this.colorblind);
     this.palette = getPalette(this.colorblind);
+    this.toggleAltMode(this.colorblind);
     this.interventions.setPalette(this.palette);
     FACTIONS.forEach((id) => {
       const sprites = this.groups[id].getChildren() as Phaser.Physics.Arcade.Image[];
