@@ -7,6 +7,7 @@ import { BalanceBar, type FactionCounts, computeEquilibrium } from "../systems/b
 import type { CooldownState, AbilityKey } from "../systems/interventions";
 import { ABILITY_METADATA, COOLDOWNS_MS, EFFECT_DURATIONS_MS } from "../systems/interventions";
 import type { GameTickPayload, GameEndSummary } from "./types";
+import { VerboseCLI } from "../ui/VerboseCLI";
 const FONT_FAMILY = "ui-monospace, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace";
 const HUD_WIDTH = 360;
 const ABILITY_ORDER: AbilityKey[] = ['1', '2', '3', '4', '5'];
@@ -31,7 +32,8 @@ type AbilityButton = {
   keycap: Phaser.GameObjects.Image;
   keycapLabel: Phaser.GameObjects.Text;
   label: Phaser.GameObjects.Text;
-  detail: Phaser.GameObjects.Text;
+  hint: Phaser.GameObjects.Text;
+  metaText: Phaser.GameObjects.Text;
   cooldown: Phaser.GameObjects.Text;
   meta: AbilityMeta;
 };
@@ -71,6 +73,9 @@ export class UI extends Phaser.Scene {
   private endLogs!: Phaser.GameObjects.Text;
   private endFooter!: Phaser.GameObjects.Text;
   private endLogTimer?: Phaser.Time.TimerEvent;
+  private verboseCli!: VerboseCLI;
+  private abilityButtonSize = { width: 0, height: 0 };
+  private statusBarSize = { width: 0, height: 0 };
   private readonly lastCounts: FactionCounts = { Fire: 0, Water: 0, Earth: 0 };
   private muted = true;
   private colorblind = false;
@@ -87,6 +92,9 @@ export class UI extends Phaser.Scene {
     this.createHud();
     this.createAbilityBar();
     this.createStatusBar();
+    this.verboseCli = new VerboseCLI(this, 24, this.scale.height - 280);
+    this.add.existing(this.verboseCli);
+    this.verboseCli.setDepth(46);
     this.createTooltip();
     this.createEndPanel();
     this.createInfoOverlay();
@@ -190,7 +198,8 @@ export class UI extends Phaser.Scene {
       if (!button) return;
       const accent = palette.Fire.toString(16).padStart(6, '0');
       button.label.setColor(`#${accent}`);
-      button.detail.setColor(this.colorblind ? '#d1e4ff' : '#7fb8ff');
+      button.hint.setColor(this.colorblind ? '#d1e4ff' : '#7fb8ff');
+      button.metaText.setColor(this.colorblind ? '#b9d8ff' : '#8fbfee');
     });
   }
   setHudVisible(visible: boolean): void {
@@ -198,6 +207,7 @@ export class UI extends Phaser.Scene {
     this.hud.setVisible(visible);
     this.balanceBar.setVisible(visible);
     this.abilityBar.setVisible(visible);
+    this.verboseCli.setPanelActive(visible);
     this.statusBar.setAlpha(visible ? 1 : 0.6);
     if (!visible) {
       this.hideTooltip();
@@ -258,7 +268,8 @@ Seed: ${summary.seed}`);
       if (!button) return;
       const accent = palette.Fire.toString(16).padStart(6, '0');
       button.label.setColor(`#${accent}`);
-      button.detail.setColor(this.colorblind ? '#d1e4ff' : '#7fb8ff');
+      button.hint.setColor(this.colorblind ? '#d1e4ff' : '#7fb8ff');
+      button.metaText.setColor(this.colorblind ? '#b9d8ff' : '#8fbfee');
     });
   }
   private createHud(): void {
@@ -301,24 +312,76 @@ Seed: ${summary.seed}`);
     this.abilityBar = this.add.container(this.scale.width / 2, this.scale.height - 82)
       .setDepth(25)
       .setScrollFactor(0);
-    const spacing = 146;
+    let spacing = 0;
     ABILITY_ORDER.forEach((key, index) => {
       const meta = ABILITY_METADATA[key];
-      const offset = index * spacing - ((ABILITY_ORDER.length - 1) * spacing) / 2;
-      const container = this.add.container(offset, 0);
+      const container = this.add.container(0, 0);
       const background = this.add.image(0, 0, 'ui-ability').setOrigin(0.5).setAlpha(0.96);
-      const keycap = this.add.image(-54, 0, 'ui-keycap').setOrigin(0.5).setAlpha(0.96);
-      const keycapLabel = this.add.text(-54, 0, key, { fontFamily: FONT_FAMILY, fontSize: '18px', color: '#e8faff' }).setOrigin(0.5);
-      const label = this.add.text(-18, -10, meta.name, { fontFamily: FONT_FAMILY, fontSize: '18px', color: '#cfe8ff' }).setOrigin(0, 0.5);
-      const detail = this.add.text(-18, 14, meta.hint ?? '', { fontFamily: FONT_FAMILY, fontSize: '13px', color: '#7fb8ff' }).setOrigin(0, 0.5);
+      const cardWidth = background.displayWidth;
+      const cardHeight = background.displayHeight;
+      if (!spacing) {
+        spacing = cardWidth + 14;
+      }
+      const offset = index * spacing - ((ABILITY_ORDER.length - 1) * spacing) / 2;
+      container.setPosition(offset, 0);
+      if (!this.abilityButtonSize.width || !this.abilityButtonSize.height) {
+        this.abilityButtonSize = { width: cardWidth, height: cardHeight };
+      }
+      const cardLeft = -cardWidth / 2;
+      const keycapX = cardLeft + 36;
+      const textStartX = cardLeft + 74;
+      const textAreaWidth = Math.max(92, cardWidth - (textStartX - cardLeft) - 24);
+      const keycap = this.add.image(keycapX, 0, 'ui-keycap').setOrigin(0.5).setAlpha(0.96);
+      const keycapLabel = this.add
+        .text(keycapX, 0, key, { fontFamily: FONT_FAMILY, fontSize: '18px', color: '#e8faff' })
+        .setOrigin(0.5);
+      const label = this.add
+        .text(textStartX, -22, meta.name, {
+          fontFamily: FONT_FAMILY,
+          fontSize: '17px',
+          color: '#cfe8ff',
+          wordWrap: { width: textAreaWidth },
+          maxLines: 2,
+        })
+        .setOrigin(0, 0);
+      const hint = this.add
+        .text(textStartX, label.y + label.height + 4, meta.hint ?? '', {
+          fontFamily: FONT_FAMILY,
+          fontSize: '12px',
+          color: '#7fb8ff',
+          wordWrap: { width: textAreaWidth },
+          lineSpacing: 4,
+        })
+        .setOrigin(0, 0);
       const cooldownSeconds = (COOLDOWNS_MS[key] ?? 0) / 1000;
       const inputHint = ABILITY_INPUT_HINT[key];
-      detail.setText(`${inputHint} · ${cooldownSeconds.toFixed(1)}s CD`);
-      const cooldown = this.add.text(0, 34, '', { fontFamily: FONT_FAMILY, fontSize: '13px', color: '#6fa4d9' }).setOrigin(0.5);
-      container.add([background, keycap, keycapLabel, label, detail, cooldown]);
-      container.setSize(132, 58);
+      const metaText = this.add
+        .text(textStartX, hint.y + hint.height + 6, '', {
+          fontFamily: FONT_FAMILY,
+          fontSize: '12px',
+          color: '#8fbfee',
+          wordWrap: { width: textAreaWidth },
+          lineSpacing: 2,
+        })
+        .setOrigin(0, 0);
+      metaText.setText(`Input: ${inputHint}\nBase CD: ${cooldownSeconds.toFixed(1)}s`);
+      const defaultMetaY = metaText.y;
+      const metaBottomPadding = 12;
+      const maxMetaY = cardHeight / 2 - metaText.height - metaBottomPadding;
+      const minMetaY = hint.y + hint.height + 2;
+      const effectiveMaxY = Math.max(minMetaY, maxMetaY);
+      metaText.setY(Phaser.Math.Clamp(defaultMetaY, minMetaY, effectiveMaxY));
+      const cooldown = this.add
+        .text(cardLeft + cardWidth - 18, -26, '', {
+          fontFamily: FONT_FAMILY,
+          fontSize: '14px',
+          color: '#8fbfee',
+        })
+        .setOrigin(1, 0.5);
+      container.add([background, keycap, keycapLabel, label, hint, metaText, cooldown]);
+      container.setSize(cardWidth, cardHeight);
       container.setInteractive({
-        hitArea: new Phaser.Geom.Rectangle(-66, -29, 132, 58),
+        hitArea: new Phaser.Geom.Rectangle(cardLeft, -cardHeight / 2, cardWidth, cardHeight),
         hitAreaCallback: Phaser.Geom.Rectangle.Contains,
         cursor: 'pointer',
       });
@@ -356,7 +419,17 @@ Seed: ${summary.seed}`);
         nativeEvent?.stopImmediatePropagation?.();
       });
       this.abilityBar.add(container);
-      this.abilityButtons[key] = { container, background, keycap, keycapLabel, label, detail, cooldown, meta };
+      this.abilityButtons[key] = {
+        container,
+        background,
+        keycap,
+        keycapLabel,
+        label,
+        hint,
+        metaText,
+        cooldown,
+        meta,
+      };
     });
     const hint = this.add.text(0, 68, 'Hold Shift for ability dossiers', {
       fontFamily: FONT_FAMILY,
@@ -370,6 +443,7 @@ Seed: ${summary.seed}`);
       .setDepth(45)
       .setScrollFactor(0);
     const background = this.add.image(0, 0, 'ui-status-pill').setOrigin(0.5);
+    this.statusBarSize = { width: background.displayWidth, height: background.displayHeight };
     const row = this.add.container(0, 0);
     const toggleMeta: Record<ToggleKey, { icon: string; label: string }> = {
       audio: { icon: '🔊', label: 'Audio' },
@@ -379,16 +453,37 @@ Seed: ${summary.seed}`);
       pause: { icon: '⏯', label: 'Flow' },
       info: { icon: 'ℹ', label: 'Info' },
     };
-    const spacing = 74;
+    let chipWidth = 0;
+    let chipHeight = 0;
+    let startX = 0;
+    let spacing = 0;
+    const horizontalPadding = 28;
     TOGGLE_KEYS.forEach((key, index) => {
       const meta = toggleMeta[key];
-      const container = this.add.container(index * spacing - ((TOGGLE_KEYS.length - 1) * spacing) / 2, 0);
+      const container = this.add.container(startX + index * spacing, 0);
       const chip = this.add.image(0, 0, 'ui-status-chip').setOrigin(0.5);
-      const icon = this.add.text(0, -6, meta.icon, { fontFamily: FONT_FAMILY, fontSize: '18px', color: '#d5f6ff' }).setOrigin(0.5);
-      const label = this.add.text(0, 12, meta.label, { fontFamily: FONT_FAMILY, fontSize: '12px', color: '#8ebfff' }).setOrigin(0.5);
+      if (!chipWidth || !chipHeight) {
+        chipWidth = chip.displayWidth;
+        chipHeight = chip.displayHeight;
+        const halfWidth = background.displayWidth / 2;
+        const leftBound = -halfWidth + horizontalPadding + chipWidth / 2;
+        const rightBound = halfWidth - horizontalPadding - chipWidth / 2;
+        spacing = TOGGLE_KEYS.length > 1 ? (rightBound - leftBound) / (TOGGLE_KEYS.length - 1) : 0;
+        startX = leftBound;
+      }
+      const icon = this.add
+        .text(0, -6, meta.icon, { fontFamily: FONT_FAMILY, fontSize: '18px', color: '#d5f6ff' })
+        .setOrigin(0.5);
+      const label = this.add
+        .text(0, 12, meta.label, { fontFamily: FONT_FAMILY, fontSize: '12px', color: '#8ebfff' })
+        .setOrigin(0.5);
       container.add([chip, icon, label]);
-      container.setSize(72, 42);
-      container.setInteractive(new Phaser.Geom.Rectangle(-36, -21, 72, 42), Phaser.Geom.Rectangle.Contains);
+      container.setPosition(startX + index * spacing, 0);
+      container.setSize(chipWidth, chipHeight);
+      container.setInteractive(
+        new Phaser.Geom.Rectangle(-chipWidth / 2, -chipHeight / 2, chipWidth, chipHeight),
+        Phaser.Geom.Rectangle.Contains,
+      );
       container.on('pointerover', () => chip.setTint(0x245c86));
       container.on('pointerout', () => chip.clearTint());
       container.on('pointerdown', () => this.events.emit('status-toggle', key));
@@ -527,19 +622,61 @@ Seed: ${summary.seed}`);
 
   private handleResize(size: Phaser.Structs.Size): void {
     const { width, height } = size;
-    const scaleFactor = Phaser.Math.Clamp(width / 1280, 0.9, 1.15);
+    const scaleFactor = Phaser.Math.Clamp(width / 1280, 0.95, 1.5);
+    const safeMargin = Math.max(18, 16 * scaleFactor);
+
     this.hud.setScale(scaleFactor);
+    this.hud.setPosition(safeMargin, safeMargin);
+
     this.abilityBar.setScale(scaleFactor);
     this.statusBar.setScale(scaleFactor);
     this.tooltip.setScale(scaleFactor);
     this.balanceBar.setScale(scaleFactor, scaleFactor);
-    this.abilityBar.setPosition(width / 2, Math.max(height - 82, 140));
-    this.statusBar.setPosition(width - 234, 42);
+    if (this.verboseCli) {
+      this.verboseCli.setScale(scaleFactor);
+    }
+
+    const abilityHeight = this.abilityButtonSize.height || 96;
+    const abilityHalf = (abilityHeight * scaleFactor) / 2;
+    const minAbilityY = safeMargin + abilityHalf + 32;
+    let abilityY = Math.max(minAbilityY, height - safeMargin - abilityHalf);
+    abilityY = Math.min(abilityY, height - safeMargin - abilityHalf);
+    this.abilityBar.setPosition(width / 2, abilityY);
+
+    const statusWidth = this.statusBarSize.width || 360;
+    const statusHeight = this.statusBarSize.height || 72;
+    const statusHalfWidth = (statusWidth * scaleFactor) / 2;
+    const statusHalfHeight = (statusHeight * scaleFactor) / 2;
+    this.statusBar.setPosition(width - safeMargin - statusHalfWidth, safeMargin + statusHalfHeight);
+
+    this.balanceBar.setPosition(this.hud.x + 36 * scaleFactor, this.hud.y + 172 * scaleFactor);
+
+    this.game.events.emit('hud-layout', {
+      safeMargin,
+      statusBarBounds: {
+        left: this.statusBar.x - statusHalfWidth,
+        right: this.statusBar.x + statusHalfWidth,
+        bottom: this.statusBar.y + statusHalfHeight,
+      },
+    });
+
+    if (this.verboseCli) {
+      const cliDimensions = this.verboseCli.getDimensions();
+      const cliWidth = cliDimensions.width * scaleFactor;
+      const cliHeight = cliDimensions.height * scaleFactor;
+      const abilityTop = abilityY - abilityHalf;
+      let cliY = abilityTop - cliHeight - 16;
+      cliY = Math.min(cliY, height - cliHeight - safeMargin);
+      cliY = Math.max(safeMargin, cliY);
+      const cliX = safeMargin;
+      this.verboseCli.setPosition(cliX, cliY);
+    }
+
     this.endPanel.setPosition(width / 2, height / 2);
-    this.tooltip.setPosition(Phaser.Math.Clamp(this.tooltip.x, 160, width - 160), this.tooltip.y);
-    this.balanceBar.setPosition(this.hud.x + 36, this.hud.y + 172);
-    const overlayWidth = Phaser.Math.Clamp(width - 160, 480, 760);
-    const overlayHeight = Phaser.Math.Clamp(height - 160, 320, 520);
+    const tooltipMargin = 160 * scaleFactor;
+    this.tooltip.setPosition(Phaser.Math.Clamp(this.tooltip.x, tooltipMargin, width - tooltipMargin), this.tooltip.y);
+    const overlayWidth = Phaser.Math.Clamp(width - safeMargin * 2, 480, 760);
+    const overlayHeight = Phaser.Math.Clamp(height - safeMargin * 2, 320, 520);
     this.infoOverlay.setPosition(width / 2, height / 2);
     this.layoutInfoOverlay(overlayWidth, overlayHeight);
   }
