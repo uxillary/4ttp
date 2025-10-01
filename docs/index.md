@@ -45,6 +45,7 @@ on update(deltaSeconds):
 - Each faction has an arcade-physics group; new entities come from `Interventions.spawnFaction`, are decorated with palette-dependent sprites, tweens, trails, and physics bounds, and are tracked for combo context (see [`Game.ts`](../src/scenes/Game.ts#L401-L499) and [`Game.ts`](../src/scenes/Game.ts#L1230-L1466)).
 - Collisions resolve via the rock–paper–scissors `beats` matrix: winners convert losers, triggering visual FX and speed resets while respecting shield status and cooldown guards (see [`rules.ts`](../src/core/rules.ts#L1-L19) and [`Game.ts`](../src/scenes/Game.ts#L452-L692)).
 - Special on-hit hooks spawn extra Earth fragments, duplicate Water droplets, or cast Earth shields, plus rare “critical” surges per faction (see [`Game.ts`](../src/scenes/Game.ts#L649-L995)).
+- When Earth units overpower Water they automatically pulse `applyEarthShield`, flagging nearby Earth sprites as `shielded` and spawning the familiar blue bulwark FX for ~2.8s even if ability 4 was never pressed (see [`Game.ts`](../src/scenes/Game.ts#L649-L918)).
 
 ### Abilities and combos
 - Input from the mouse, keyboard, or UI buttons pushes requests into an ability queue that the update loop consumes when the run is active (see [`Game.ts`](../src/scenes/Game.ts#L501-L535) and [`Game.ts`](../src/scenes/Game.ts#L313-L344)).
