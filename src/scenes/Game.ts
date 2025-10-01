@@ -18,6 +18,14 @@ import { UI } from "./UI";
 import { burst, pulse, shieldFx } from "../utils/fx";
 import type { GameTickPayload, GameEndSummary } from "./types";
 import { logEvent } from "../systems/log";
+import {
+  HUD_SAFE_MARGIN,
+  HUD_RADIUS,
+  PANEL_BACKGROUND_ALPHA,
+  PANEL_BACKGROUND_COLOR,
+  PANEL_BORDER_ALPHA,
+  PANEL_BORDER_COLOR,
+} from "../ui/theme";
 
 type GameInitData = {
   mode?: Mode;
@@ -34,7 +42,8 @@ type UiToggleKey = 'audio' | 'hud' | 'palette' | 'speed' | 'pause' | 'info';
 
 type HudLayoutEvent = {
   safeMargin: number;
-  statusBarBounds: { left: number; right: number; bottom: number };
+  infoPanel: { left: number; top: number; right: number; bottom: number };
+  abilityBar: { left: number; right: number; top: number; bottom: number };
 };
 
 const MUTED_KEY = "muted";
@@ -68,6 +77,7 @@ type ComboEffect = (typeof COMBO_DEFINITIONS)[number]['effect'];
 const BACKGROUND_UNSTABLE = Phaser.Display.Color.ValueToColor(0xff6347);
 const BACKGROUND_STABLE = Phaser.Display.Color.ValueToColor(0x55e6a5);
 const MINIMAP_SIZE = 168;
+const MINIMAP_FRAME_PADDING = 8;
 const MINIMAP_PADDING = 18;
 const ENTITY_TRAIL_CONFIG: Record<FactionId, { tint: number; lifespan: number }> = {
   Fire: { tint: 0xff5c43, lifespan: 220 },
@@ -1578,14 +1588,20 @@ export class Game extends Phaser.Scene {
     }
     const container = this.add
       .container(0, 0)
-      .setDepth(58)
+      .setDepth(20)
       .setScrollFactor(0);
-    const background = this.add
-      .rectangle(0, 0, MINIMAP_SIZE + 16, MINIMAP_SIZE + 16, 0x041425, 0.86)
-      .setOrigin(0, 0)
-      .setStrokeStyle(2, 0x123252, 0.85);
-    const graphics = this.add.graphics({ x: 8, y: 8 }).setScrollFactor(0).setDepth(53);
-    container.add([background, graphics]);
+    const containerWidth = MINIMAP_SIZE + MINIMAP_FRAME_PADDING * 2;
+    const containerHeight = MINIMAP_SIZE + MINIMAP_FRAME_PADDING * 2;
+    const frame = this.add.graphics().setScrollFactor(0);
+    frame.fillStyle(PANEL_BACKGROUND_COLOR, PANEL_BACKGROUND_ALPHA);
+    frame.fillRoundedRect(0, 0, containerWidth, containerHeight, HUD_RADIUS);
+    frame.lineStyle(1, PANEL_BORDER_COLOR, PANEL_BORDER_ALPHA);
+    frame.strokeRoundedRect(0.5, 0.5, containerWidth - 1, containerHeight - 1, Math.max(0, HUD_RADIUS - 1));
+    const graphics = this.add
+      .graphics({ x: MINIMAP_FRAME_PADDING, y: MINIMAP_FRAME_PADDING })
+      .setScrollFactor(0);
+    container.add([frame, graphics]);
+    container.setSize(containerWidth, containerHeight);
     this.miniMapContainer = container;
     this.miniMapGraphics = graphics;
     this.positionMiniMap();
@@ -1600,22 +1616,55 @@ export class Game extends Phaser.Scene {
     if (!this.miniMapContainer) {
       return;
     }
-    const containerWidth = MINIMAP_SIZE + 16;
-    const containerHeight = MINIMAP_SIZE + 16;
+    const containerWidth = MINIMAP_SIZE + MINIMAP_FRAME_PADDING * 2;
+    const containerHeight = MINIMAP_SIZE + MINIMAP_FRAME_PADDING * 2;
     const width = this.scale.width;
     const height = this.scale.height;
-    let x = width - containerWidth - MINIMAP_PADDING;
-    let y = MINIMAP_PADDING;
+    const safeMargin = this.hudLayout?.safeMargin ?? MINIMAP_PADDING;
+    let x = safeMargin;
+    let y = safeMargin;
     if (this.hudLayout) {
-      const { safeMargin, statusBarBounds } = this.hudLayout;
-      const minX = safeMargin;
+      const { infoPanel, abilityBar } = this.hudLayout;
+      const hudScale = safeMargin / HUD_SAFE_MARGIN;
+      const minGap = 8 * hudScale;
+      const placeBelowInfo = height >= 720;
+      x = safeMargin;
+      if (placeBelowInfo) {
+        y = infoPanel.bottom + minGap;
+      } else {
+        y = height - safeMargin - containerHeight;
+      }
+      const infoRect = new Phaser.Geom.Rectangle(
+        infoPanel.left,
+        infoPanel.top,
+        infoPanel.right - infoPanel.left,
+        infoPanel.bottom - infoPanel.top,
+      );
+      if (!placeBelowInfo) {
+        const abilityTop = abilityBar.top;
+        if (y + containerHeight > abilityTop - minGap) {
+          y = abilityTop - containerHeight - minGap;
+        }
+      }
+      let minimapRect = new Phaser.Geom.Rectangle(x, y, containerWidth, containerHeight);
+      if (Phaser.Geom.Rectangle.Overlaps(infoRect, minimapRect) || minimapRect.top - infoRect.bottom < minGap) {
+        y = infoPanel.bottom + minGap;
+        minimapRect = new Phaser.Geom.Rectangle(x, y, containerWidth, containerHeight);
+      }
+      y = Phaser.Math.Clamp(y, safeMargin, height - containerHeight - safeMargin);
+      minimapRect.y = y;
+      if (!placeBelowInfo && Phaser.Geom.Rectangle.Overlaps(infoRect, minimapRect)) {
+        const offset = infoRect.bottom + minGap - minimapRect.top;
+        if (offset > 0) {
+          y = Phaser.Math.Clamp(y + offset, safeMargin, height - containerHeight - safeMargin);
+        }
+      }
       const maxX = width - containerWidth - safeMargin;
-      const minY = safeMargin;
-      const maxY = height - containerHeight - safeMargin;
-      const alignedX = statusBarBounds.right - containerWidth;
-      const alignedY = statusBarBounds.bottom + 16;
-      x = Phaser.Math.Clamp(alignedX, minX, maxX);
-      y = Phaser.Math.Clamp(alignedY, minY, maxY);
+      x = Phaser.Math.Clamp(x, safeMargin, Math.max(safeMargin, maxX));
+    } else {
+      const maxX = width - containerWidth - safeMargin;
+      x = Phaser.Math.Clamp(x, safeMargin, Math.max(safeMargin, maxX));
+      y = Phaser.Math.Clamp(y, safeMargin, height - containerHeight - safeMargin);
     }
     this.miniMapContainer.setPosition(x, y);
   }
@@ -1626,8 +1675,8 @@ export class Game extends Phaser.Scene {
     }
     const gfx = this.miniMapGraphics;
     gfx.clear();
-    gfx.fillStyle(0x0a1b30, 0.78);
-    gfx.fillRoundedRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE, 10);
+    gfx.fillStyle(PANEL_BACKGROUND_COLOR, PANEL_BACKGROUND_ALPHA * 0.95);
+    gfx.fillRoundedRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE, Math.max(0, HUD_RADIUS - 2));
     const width = Math.max(this.scale.width, 1);
     const height = Math.max(this.scale.height, 1);
     const scaleX = MINIMAP_SIZE / width;
