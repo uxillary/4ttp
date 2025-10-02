@@ -1,5 +1,6 @@
-import Phaser from 'phaser';
-import { clearLog, getLogHistory, logEvent, logEvents, type GameEvent } from '../systems/log';
+import Phaser from "phaser";
+import { Bus } from "../systems/EventBus";
+import { clearLog, getLogHistory, type GameEvent } from "../systems/log";
 import {
   HUD_FONT_FAMILY,
   HUD_MONO_FONT_FAMILY,
@@ -9,11 +10,34 @@ import {
   PANEL_BORDER_ALPHA,
   PANEL_BORDER_COLOR,
   getHudScale,
-} from './theme';
+} from "./theme";
 
-type FilterKey = 'all' | 'damage' | 'status' | 'spawns' | 'system';
+const PANEL_BASE_WIDTH = 420;
+const PANEL_BASE_HEIGHT = 228;
+const MINIMIZED_HEIGHT = 28;
+const HEADER_PADDING_X = 14;
+const HEADER_PADDING_Y = 12;
+const HEADER_GAP = 8;
+const CHIP_PADDING_X = 10;
+const CHIP_PADDING_Y = 5;
+const CHIP_GAP = 6;
+const CHIP_ROW_GAP = 6;
+const ACTION_GAP = 8;
+const ACTION_PADDING_X = 12;
+const BODY_PADDING_X = 14;
+const BODY_PADDING_Y = 10;
+const LINE_HEIGHT = 16;
+const MAX_VISIBLE_LINES = 50;
+const MAX_BUFFER = 250;
 
-type FilterButton = {
+const DAMAGE_TYPES: Array<GameEvent["t"]> = ["hit", "kill"];
+const STATUS_TYPES: Array<GameEvent["t"]> = ["buff"];
+const SPAWN_TYPES: Array<GameEvent["t"]> = ["spawn"];
+const SYSTEM_TYPES: Array<GameEvent["t"]> = ["system"];
+
+type FilterKey = "all" | "damage" | "status" | "spawns" | "system";
+
+type FilterChip = {
   container: Phaser.GameObjects.Container;
   background: Phaser.GameObjects.Graphics;
   label: Phaser.GameObjects.Text;
@@ -21,105 +45,94 @@ type FilterButton = {
   height: number;
 };
 
-type IconButton = {
+type HeaderButton = {
   container: Phaser.GameObjects.Container;
   background: Phaser.GameObjects.Graphics;
-  icon: Phaser.GameObjects.Text;
+  label: Phaser.GameObjects.Text;
+  width: number;
+  height: number;
 };
 
 const FILTER_LABELS: Record<FilterKey, string> = {
-  all: 'All',
-  damage: 'Damage',
-  status: 'Status',
-  spawns: 'Spawns',
-  system: 'System',
+  all: "All",
+  damage: "Damage",
+  status: "Status",
+  spawns: "Spawns",
+  system: "System",
 };
 
-const FILTER_ORDER: FilterKey[] = ['all', 'damage', 'status', 'spawns', 'system'];
+const FILTER_ORDER: FilterKey[] = ["all", "damage", "status", "spawns", "system"];
 
-const DAMAGE_TYPES = new Set<GameEvent['t']>(['hit', 'kill']);
-const STATUS_TYPES = new Set<GameEvent['t']>(['buff']);
-const SPAWN_TYPES = new Set<GameEvent['t']>(['spawn']);
-const SYSTEM_TYPES = new Set<GameEvent['t']>(['system']);
-const BASE_HEADER_HEIGHT = 44;
-const BASE_BODY_PADDING_X = 12;
-const BASE_BODY_PADDING_Y = 8;
-const FILTER_GAP = 6;
-const CHIP_PADDING_X = 8;
-const CHIP_PADDING_Y = 4;
-const CHIP_HEIGHT = 24;
-const ICON_BUTTON_SIZE = 26;
-const TITLE_FONT_SIZE = 14;
-const BODY_FONT_SIZE = 12;
-const HEADER_HORIZONTAL_PADDING = 16;
-const CHIP_ROW_GAP = 4;
+function matchesFilter(filter: FilterKey, event: GameEvent): boolean {
+  switch (filter) {
+    case "all":
+      return true;
+    case "damage":
+      return DAMAGE_TYPES.includes(event.t);
+    case "status":
+      return STATUS_TYPES.includes(event.t);
+    case "spawns":
+      return SPAWN_TYPES.includes(event.t);
+    case "system":
+      return SYSTEM_TYPES.includes(event.t);
+    default:
+      return true;
+  }
+}
+
+function formatEvent(event: GameEvent): string {
+  const stamp = event.at.toFixed(1).padStart(6, " ");
+  switch (event.t) {
+    case "hit":
+      return `@${stamp} HIT ${event.src} → ${event.dst}  -${event.amount.toFixed(0)} (${event.rule})`;
+    case "kill":
+      return `@${stamp} KILL ${event.src} ✕ ${event.dst} (${event.rule})`;
+    case "buff":
+      return `@${stamp} STATUS ${event.who} +${event.kind} ${(event.dur / 1000).toFixed(1)}s`;
+    case "spawn":
+      return `@${stamp} SPAWN ${event.kind} ×${event.n}`;
+    case "system":
+      return `@${stamp} SYSTEM ${event.msg}`;
+    default:
+      return `@${stamp} EVENT`;
+  }
+}
 
 export class VerboseCLI extends Phaser.GameObjects.Container {
   private readonly background: Phaser.GameObjects.Graphics;
   private readonly border: Phaser.GameObjects.Graphics;
   private readonly header: Phaser.GameObjects.Container;
-  private readonly filterButtons: Record<FilterKey, FilterButton> = {} as Record<FilterKey, FilterButton>;
-  private readonly pauseButton: IconButton;
-  private readonly clearButton: IconButton;
-  private readonly collapseButton: IconButton;
+  private readonly title: Phaser.GameObjects.Text;
+  private readonly filterChips: Record<FilterKey, FilterChip> = {} as Record<FilterKey, FilterChip>;
+  private readonly pauseButton: HeaderButton;
+  private readonly clearButton: HeaderButton;
+  private readonly collapseButton: HeaderButton;
   private readonly body: Phaser.GameObjects.Container;
   private readonly maskRect: Phaser.GameObjects.Rectangle;
   private readonly bodyMask: Phaser.Display.Masks.GeometryMask;
   private readonly scrollZone: Phaser.GameObjects.Zone;
-  private readonly resizeHandle: Phaser.GameObjects.Triangle;
-  private readonly chipTooltip: Phaser.GameObjects.Container;
-  private readonly chipTooltipBackground: Phaser.GameObjects.Graphics;
-  private readonly chipTooltipLabel: Phaser.GameObjects.Text;
   private readonly lines: Phaser.GameObjects.Text[] = [];
 
+  private hudScale = getHudScale();
+  private panelWidth = PANEL_BASE_WIDTH;
+  private panelHeight = PANEL_BASE_HEIGHT;
+  private headerHeight = 0;
+  private bodyWidth = 0;
+  private bodyHeight = 0;
+  private lineHeight = LINE_HEIGHT;
+
   private events: GameEvent[] = [];
-  private filtered: GameEvent[] = [];
-  private filter: FilterKey = 'all';
+  private filter: FilterKey = "all";
   private paused = false;
   private minimized = false;
-  private atBottom = true;
-  private scrollOffset = 0;
-  private maxScroll = 0;
+  private stickToBottom = true;
+  private scrollIndex = 0;
+  private maxScrollIndex = 0;
 
-  private currentWidth: number;
-  private currentHeight: number;
-  private savedHeight: number;
-  private baseWidth: number;
-  private baseHeight: number;
-  private hudScale = getHudScale();
-  private headerHeight = BASE_HEADER_HEIGHT;
-
-  private readonly minWidth = 320;
-  private readonly maxWidth = 620;
-  private readonly minHeight = 140;
-  private readonly maxHeight = 320;
-  private readonly maxVisible = 50;
-  private readonly lineHeight = 18;
-
-  private resizing = false;
-  private resizeStart: { x: number; y: number; width: number; height: number } | null = null;
-
-  private scaled(value: number): number {
-    return value * this.hudScale;
-  }
-
-  private bodyPaddingX(): number {
-    return this.scaled(BASE_BODY_PADDING_X);
-  }
-
-  private bodyPaddingY(): number {
-    return this.scaled(BASE_BODY_PADDING_Y);
-  }
-
-  constructor(scene: Phaser.Scene, x: number, y: number, width = 420, height = 180) {
+  constructor(scene: Phaser.Scene, x: number, y: number) {
     super(scene, x, y);
-    this.currentWidth = Phaser.Math.Clamp(width, this.minWidth, this.maxWidth);
-    this.currentHeight = Phaser.Math.Clamp(height, this.minHeight, this.maxHeight);
-    this.savedHeight = this.currentHeight;
-    this.baseWidth = this.currentWidth / this.hudScale;
-    this.baseHeight = this.currentHeight / this.hudScale;
-    this.setSize(this.currentWidth, this.currentHeight);
     this.setScrollFactor(0);
+    this.setDepth(46);
 
     this.background = scene.add.graphics();
     this.border = scene.add.graphics();
@@ -127,712 +140,403 @@ export class VerboseCLI extends Phaser.GameObjects.Container {
     this.border.setScrollFactor(0);
 
     this.header = scene.add.container(0, 0);
-    const title = scene.add
-      .text(0, 0, 'Events', {
+    this.header.setScrollFactor(0);
+
+    this.title = scene.add
+      .text(0, 0, "Verbose CLI", {
         fontFamily: HUD_FONT_FAMILY,
-        fontSize: `${TITLE_FONT_SIZE}px`,
-        fontStyle: '600',
-        color: '#d7efff',
+        fontSize: "14px",
+        fontStyle: "600",
+        color: "#d8ecff",
       })
       .setOrigin(0, 0);
-    this.header.add(title);
+    this.header.add(this.title);
 
     FILTER_ORDER.forEach((key) => {
-      const button = this.createFilterButton(FILTER_LABELS[key], key);
-      this.filterButtons[key] = button;
-      this.header.add(button.container);
+      const chip = this.createFilterChip(FILTER_LABELS[key], key);
+      this.filterChips[key] = chip;
+      this.header.add(chip.container);
     });
 
-    this.pauseButton = this.createIconButton('⏸');
-    this.clearButton = this.createIconButton('🧹');
-    this.collapseButton = this.createIconButton('⌄');
-    [this.pauseButton, this.clearButton, this.collapseButton].forEach((entry) =>
-      this.header.add(entry.container),
-    );
+    this.pauseButton = this.createActionButton("Pause");
+    this.clearButton = this.createActionButton("Clear");
+    this.collapseButton = this.createActionButton("Minimise");
+
+    this.header.add([this.pauseButton.container, this.clearButton.container, this.collapseButton.container]);
 
     this.body = scene.add.container(0, 0);
-    this.maskRect = scene.add
-      .rectangle(0, 0, this.currentWidth, this.bodyHeight())
-      .setOrigin(0)
-      .setVisible(false)
-      .setActive(false);
+    this.body.setScrollFactor(0);
+
+    this.maskRect = scene.add.rectangle(0, 0, this.panelWidth, this.panelHeight, 0x000000, 0);
     this.maskRect.setScrollFactor(0);
+    this.maskRect.setOrigin(0, 0);
+    this.maskRect.setVisible(false);
     this.bodyMask = this.maskRect.createGeometryMask();
     this.body.setMask(this.bodyMask);
 
-    for (let i = 0; i < this.maxVisible; i += 1) {
+    for (let i = 0; i < MAX_VISIBLE_LINES; i += 1) {
       const line = scene.add
-        .text(0, 0, '', {
+        .text(0, 0, "", {
           fontFamily: HUD_MONO_FONT_FAMILY,
-          fontSize: `${BODY_FONT_SIZE}px`,
-          color: '#c0d6f6',
+          fontSize: `${LINE_HEIGHT}px`,
+          color: "#c4d9ff",
         })
         .setOrigin(0, 0);
-      line.setFontSize(BODY_FONT_SIZE * this.hudScale);
-      line.setVisible(false);
+      line.setScrollFactor(0);
       this.body.add(line);
       this.lines.push(line);
     }
 
-    this.scrollZone = scene.add
-      .zone(0, 0, this.currentWidth, this.bodyHeight())
-      .setOrigin(0)
-      .setInteractive({ cursor: 'default' });
+    this.scrollZone = scene.add.zone(0, 0, this.panelWidth, this.panelHeight);
+    this.scrollZone.setOrigin(0, 0);
     this.scrollZone.setScrollFactor(0);
+    this.scrollZone.setInteractive({ cursor: "default" });
 
-    this.resizeHandle = scene.add
-      .triangle(this.currentWidth - 18, this.currentHeight - 18, 0, 16, 16, 16, 16, 0, 0xffffff, 0.28)
-      .setOrigin(0, 0);
-    this.resizeHandle.setStrokeStyle(1, 0x2a4f73, 0.75);
-    this.resizeHandle.setInteractive({ cursor: 'nwse-resize' });
+    this.add([this.background, this.border, this.header, this.body, this.scrollZone]);
 
-    this.chipTooltipBackground = scene.add.graphics();
-    this.chipTooltipBackground.setScrollFactor(0);
-    this.chipTooltipLabel = scene.add
-      .text(0, 0, '', {
-        fontFamily: HUD_FONT_FAMILY,
-        fontSize: `${BODY_FONT_SIZE}px`,
-        fontStyle: '500',
-        color: '#e2f4ff',
-      })
-      .setOrigin(0.5);
-    this.chipTooltipLabel.setScrollFactor(0);
-    this.chipTooltip = scene.add
-      .container(0, 0, [this.chipTooltipBackground, this.chipTooltipLabel])
-      .setVisible(false);
-    this.chipTooltip.setScrollFactor(0);
+    this.scrollZone.on(
+      "wheel",
+      (_pointer: Phaser.Input.Pointer, _over: unknown, _dx: number, dy: number, _dz: number, event: WheelEvent) => {
+        if (this.minimized || this.bodyHeight <= 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const direction = Math.sign(dy) || 1;
+        this.scrollIndex = Phaser.Math.Clamp(this.scrollIndex + direction, 0, this.maxScrollIndex);
+        this.stickToBottom = this.scrollIndex === 0;
+        this.render();
+      },
+    );
 
-    this.add([
-      this.background,
-      this.border,
-      this.maskRect,
-      this.body,
-      this.scrollZone,
-      this.header,
-      this.resizeHandle,
-      this.chipTooltip,
-    ]);
-
-    this.registerInteractions();
-    this.bindLogEvents();
-
-    const history = getLogHistory();
-    if (history.length) {
-      this.events = history.slice();
-    }
-    this.applyFilter(true);
-    this.updateHeaderLayout();
-    this.updateLayout();
-
-    this.scene.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.destroy());
-    this.once(Phaser.GameObjects.Events.DESTROY, () => {
-      logEvents.off('event', this.handleIncomingEvent, this);
-      logEvents.off('cleared', this.handleLogCleared, this);
-      this.scene.input.off('pointermove', this.handlePointerMove, this);
-      this.scene.input.off('pointerup', this.handlePointerUp, this);
-    });
-  }
-
-  override destroy(fromScene?: boolean): void {
-    this.background.destroy();
-    this.border.destroy();
-    this.header.destroy(true);
-    this.body.destroy(true);
-    this.maskRect.destroy();
-    this.scrollZone.destroy();
-    this.resizeHandle.destroy();
-    this.chipTooltip.destroy(true);
-    super.destroy(fromScene);
-  }
-
-  getDimensions(scale = this.hudScale): { width: number; height: number } {
-    const width = this.baseWidth * scale;
-    const minimizedHeight = Math.min(32 * scale, (CHIP_HEIGHT + BASE_BODY_PADDING_Y * 2) * scale);
-    const height = this.minimized ? minimizedHeight : this.baseHeight * scale;
-    return { width, height };
-  }
-
-  setHudScale(scale: number): void {
-    const clamped = Phaser.Math.Clamp(scale, 1, 1.5);
-    if (Math.abs(clamped - this.hudScale) < 0.001) {
-      return;
-    }
-    this.hudScale = clamped;
-    const targetWidth = Phaser.Math.Clamp(this.baseWidth * this.hudScale, this.minWidth * this.hudScale, this.maxWidth * this.hudScale);
-    const targetHeightBase = this.minimized
-      ? Math.min(32, CHIP_HEIGHT + BASE_BODY_PADDING_Y * 2)
-      : this.baseHeight;
-    const targetHeight = Phaser.Math.Clamp(targetHeightBase * this.hudScale, this.minHeight * this.hudScale, this.maxHeight * this.hudScale);
-    this.setSize(targetWidth, targetHeight);
-    this.currentWidth = targetWidth;
-    this.currentHeight = targetHeight;
-    if (!this.minimized) {
-      this.savedHeight = targetHeight;
-    }
-    this.lines.forEach((line) => line.setFontSize(BODY_FONT_SIZE * this.hudScale));
-    this.hideChipTooltip();
-    this.updateHeaderLayout();
-    this.updateLayout();
-    this.updateScrollBounds(false);
-    this.render();
-  }
-
-  setPanelActive(enabled: boolean): void {
-    this.setVisible(enabled);
-    if (!enabled) {
-      this.scrollZone.disableInteractive();
-      this.resizeHandle.disableInteractive();
-      this.hideChipTooltip();
-      return;
-    }
-    this.updateLayout();
-  }
-
-  private registerInteractions(): void {
-    FILTER_ORDER.forEach((key) => {
-      const button = this.filterButtons[key];
-      if (!button) return;
-      button.container.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-        pointer.event?.preventDefault?.();
-        pointer.event?.stopPropagation?.();
-        this.setFilter(key);
-      });
-    });
-
-    const pauseHandler = (pointer: Phaser.Input.Pointer) => {
+    this.scrollZone.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
       pointer.event?.preventDefault?.();
       pointer.event?.stopPropagation?.();
-      this.paused = !this.paused;
-      this.updatePauseIcon();
-      if (!this.paused && this.atBottom) {
-        this.scrollOffset = this.maxScroll;
-        this.render();
-      }
-    };
-    this.pauseButton.container.on('pointerdown', pauseHandler);
+    });
 
-    this.clearButton.container.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+    this.pauseButton.container.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+      pointer.event?.preventDefault?.();
+      pointer.event?.stopPropagation?.();
+      this.togglePause();
+    });
+
+    this.clearButton.container.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
       pointer.event?.preventDefault?.();
       pointer.event?.stopPropagation?.();
       clearLog();
-      this.events = [];
-      this.filtered = [];
-      this.scrollOffset = 0;
-      this.maxScroll = 0;
-      this.render();
     });
 
-    this.collapseButton.container.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+    this.collapseButton.container.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
       pointer.event?.preventDefault?.();
       pointer.event?.stopPropagation?.();
       this.toggleMinimized();
     });
 
-    this.scrollZone.on(
-      'wheel',
-      (pointer: Phaser.Input.Pointer, _over: unknown, _dx: number, dy: number, _dz: number, event: WheelEvent) => {
-        if (this.minimized) return;
-        event.preventDefault();
-        event.stopPropagation();
-        const delta = dy * 0.4;
-        this.scrollOffset = Phaser.Math.Clamp(this.scrollOffset + delta, 0, this.maxScroll);
-        this.atBottom = this.scrollOffset >= this.maxScroll - 1;
-        this.render();
-      },
-    );
-
-    this.scrollZone.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      pointer.event?.preventDefault?.();
-      pointer.event?.stopPropagation?.();
+    scene.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      Bus.off("log", this.handleIncomingEvent, this);
+      Bus.off("log:clear", this.handleLogCleared, this);
     });
 
-    this.resizeHandle.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      pointer.event?.preventDefault?.();
-      pointer.event?.stopPropagation?.();
-      if (this.minimized) {
-        return;
-      }
-      this.resizing = true;
-      this.resizeStart = {
-        x: pointer.x,
-        y: pointer.y,
-        width: this.currentWidth,
-        height: this.currentHeight,
-      };
+    this.once(Phaser.GameObjects.Events.DESTROY, () => {
+      Bus.off("log", this.handleIncomingEvent, this);
+      Bus.off("log:clear", this.handleLogCleared, this);
+      this.maskRect.destroy();
     });
 
-    this.scene.input.on('pointermove', this.handlePointerMove, this);
-    this.scene.input.on('pointerup', this.handlePointerUp, this);
+    Bus.on("log", this.handleIncomingEvent, this);
+    Bus.on("log:clear", this.handleLogCleared, this);
+
+    this.events = getLogHistory().slice(-MAX_BUFFER);
+    this.layout();
+    this.render(true);
   }
 
-  private bindLogEvents(): void {
-    logEvents.on('event', this.handleIncomingEvent, this);
-    logEvents.on('cleared', this.handleLogCleared, this);
+  setPanelActive(enabled: boolean): void {
+    this.setVisible(enabled);
+    if (enabled && !this.minimized && this.bodyHeight > 0) {
+      this.scrollZone.setInteractive({ cursor: "default" });
+    } else {
+      this.scrollZone.disableInteractive();
+    }
+  }
+
+  getDimensions(scale = this.hudScale): { width: number; height: number } {
+    const width = Math.round(PANEL_BASE_WIDTH * Phaser.Math.Clamp(scale, 1, 1.5));
+    const heightBase = this.minimized ? MINIMIZED_HEIGHT : PANEL_BASE_HEIGHT;
+    const height = Math.round(heightBase * Phaser.Math.Clamp(scale, 1, 1.5));
+    return { width, height };
+  }
+
+  setHudScale(scale: number): void {
+    const clamped = Phaser.Math.Clamp(scale, 1, 1.5);
+    if (Math.abs(clamped - this.hudScale) < 0.001) return;
+    this.hudScale = clamped;
+    this.layout();
+    this.render(true);
+  }
+
+  private togglePause(): void {
+    this.paused = !this.paused;
+    this.pauseButton.label.setText(this.paused ? "Resume" : "Pause");
+    this.layout();
+    if (!this.paused) {
+      this.scrollIndex = 0;
+      this.stickToBottom = true;
+      this.render(true);
+    }
+  }
+
+  private toggleMinimized(): void {
+    this.minimized = !this.minimized;
+    this.collapseButton.label.setText(this.minimized ? "Expand" : "Minimise");
+    if (this.minimized) {
+      this.scrollZone.disableInteractive();
+    } else if (this.visible) {
+      this.scrollZone.setInteractive({ cursor: "default" });
+    }
+    this.layout();
+    this.render(true);
+  }
+
+  private createFilterChip(label: string, key: FilterKey): FilterChip {
+    const container = this.scene.add.container(0, 0);
+    container.setSize(1, 1);
+    container.setScrollFactor(0);
+    const background = this.scene.add.graphics();
+    background.setScrollFactor(0);
+    const text = this.scene.add
+      .text(0, 0, label, {
+        fontFamily: HUD_FONT_FAMILY,
+        fontSize: "12px",
+        fontStyle: "500",
+        color: "#d6ecff",
+      })
+      .setOrigin(0.5);
+    text.setScrollFactor(0);
+    container.add([background, text]);
+    container.setInteractive(new Phaser.Geom.Rectangle(0, 0, 1, 1), Phaser.Geom.Rectangle.Contains);
+    container.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+      pointer.event?.preventDefault?.();
+      pointer.event?.stopPropagation?.();
+      if (this.filter === key) return;
+      this.filter = key;
+      this.scrollIndex = 0;
+      this.stickToBottom = true;
+      this.layout();
+      this.render(true);
+    });
+    return { container, background, label: text, width: 0, height: 0 };
+  }
+
+  private createActionButton(label: string): HeaderButton {
+    const container = this.scene.add.container(0, 0);
+    container.setScrollFactor(0);
+    const background = this.scene.add.graphics();
+    background.setScrollFactor(0);
+    const text = this.scene.add
+      .text(0, 0, label, {
+        fontFamily: HUD_FONT_FAMILY,
+        fontSize: "12px",
+        fontStyle: "600",
+        color: "#e5f4ff",
+      })
+      .setOrigin(0.5);
+    text.setScrollFactor(0);
+    container.add([background, text]);
+    container.setSize(1, 1);
+    container.setInteractive(new Phaser.Geom.Rectangle(0, 0, 1, 1), Phaser.Geom.Rectangle.Contains);
+    return { container, background, label: text, width: 0, height: 0 };
   }
 
   private handleIncomingEvent(event: GameEvent): void {
-    const wasAtBottom = this.atBottom && !this.paused;
     this.events.push(event);
-    if (this.events.length > 250) {
-      this.events.splice(0, this.events.length - 250);
+    if (this.events.length > MAX_BUFFER) {
+      this.events.splice(0, this.events.length - MAX_BUFFER);
     }
-    this.applyFilter(wasAtBottom);
+    if (this.paused) {
+      this.updateScrollBounds();
+      return;
+    }
+    if (this.stickToBottom) {
+      this.scrollIndex = 0;
+    }
+    this.render();
   }
 
   private handleLogCleared(): void {
     this.events = [];
-    this.filtered = [];
-    this.scrollOffset = 0;
-    this.maxScroll = 0;
-    this.atBottom = true;
-    this.render();
+    this.scrollIndex = 0;
+    this.stickToBottom = true;
+    this.render(true);
   }
 
-  private bodyHeight(): number {
-    return Math.max(0, this.currentHeight - this.headerHeight - this.bodyPaddingY() * 2);
-  }
-
-  private handlePointerMove(pointer: Phaser.Input.Pointer): void {
-    if (!this.resizing || !this.resizeStart) {
-      return;
-    }
-    const scaleX = this.scaleX || 1;
-    const scaleY = this.scaleY || 1;
-    const deltaX = (pointer.x - this.resizeStart.x) / scaleX;
-    const deltaY = (pointer.y - this.resizeStart.y) / scaleY;
-    const minWidth = this.minWidth * this.hudScale;
-    const maxWidth = this.maxWidth * this.hudScale;
-    const minHeight = this.minHeight * this.hudScale;
-    const maxHeight = this.maxHeight * this.hudScale;
-    const width = Phaser.Math.Clamp(this.resizeStart.width + deltaX, minWidth, maxWidth);
-    const height = Phaser.Math.Clamp(this.resizeStart.height + deltaY, minHeight, maxHeight);
-    this.setPanelSize(width, height);
-  }
-
-  private handlePointerUp(): void {
-    if (!this.resizing) return;
-    this.resizing = false;
-    this.resizeStart = null;
-    this.savedHeight = this.currentHeight;
-  }
-
-  private setPanelSize(width: number, height: number): void {
-    const minWidth = this.minWidth * this.hudScale;
-    const maxWidth = this.maxWidth * this.hudScale;
-    const minHeight = this.minHeight * this.hudScale;
-    const maxHeight = this.maxHeight * this.hudScale;
-    this.currentWidth = Phaser.Math.Clamp(width, minWidth, maxWidth);
-    this.currentHeight = Phaser.Math.Clamp(height, minHeight, maxHeight);
-    if (!this.minimized) {
-      this.savedHeight = this.currentHeight;
-      this.baseWidth = this.currentWidth / this.hudScale;
-      this.baseHeight = this.currentHeight / this.hudScale;
-    }
-    this.setSize(this.currentWidth, this.currentHeight);
-    this.updateHeaderLayout();
-    this.updateLayout();
-    this.updateScrollBounds(false);
-    this.render();
-  }
-
-  private toggleMinimized(): void {
-    if (this.minimized) {
-      this.minimized = false;
-      this.setPanelSize(this.currentWidth, this.baseHeight * this.hudScale);
-    } else {
-      this.minimized = true;
-      const stubHeight = Math.min(32 * this.hudScale, this.scaled(CHIP_HEIGHT) + this.bodyPaddingY() * 2);
-      this.setPanelSize(this.currentWidth, stubHeight);
-    }
-    this.updateCollapseIcon();
-    this.hideChipTooltip();
-  }
-
-  private setFilter(filter: FilterKey): void {
-    if (this.filter === filter) return;
-    this.filter = filter;
-    this.applyFilter(true);
-    this.updateFilterStyles();
-    this.hideChipTooltip();
-  }
-
-  private applyFilter(stickToBottom: boolean): void {
-    this.filtered = this.events.filter((event) => this.filterEvent(event));
-    this.updateScrollBounds(stickToBottom);
-    this.render();
-  }
-
-  private filterEvent(event: GameEvent): boolean {
-    switch (this.filter) {
-      case 'damage':
-        return DAMAGE_TYPES.has(event.t);
-      case 'status':
-        return STATUS_TYPES.has(event.t);
-      case 'spawns':
-        return SPAWN_TYPES.has(event.t);
-      case 'system':
-        return SYSTEM_TYPES.has(event.t);
-      default:
-        return true;
-    }
-  }
-
-  private updateScrollBounds(stickToBottom: boolean): void {
-    const lineStep = this.lineHeight * this.hudScale;
-    this.maxScroll = Math.max(0, this.filtered.length * lineStep - this.bodyHeight());
-    if (stickToBottom) {
-      this.scrollOffset = this.maxScroll;
-    } else {
-      this.scrollOffset = Phaser.Math.Clamp(this.scrollOffset, 0, this.maxScroll);
-    }
-    this.atBottom = this.scrollOffset >= this.maxScroll - 1;
-  }
-
-  private updateLayout(): void {
-    this.hideChipTooltip();
-    const paddingX = this.bodyPaddingX();
-    const paddingY = this.bodyPaddingY();
-    const bodyHeight = this.bodyHeight();
-    this.body.setPosition(paddingX, this.headerHeight + paddingY);
-    this.maskRect.setPosition(paddingX, this.headerHeight + paddingY);
-    this.maskRect.setSize(Math.max(0, this.currentWidth - paddingX * 2), Math.max(0, bodyHeight));
-    this.scrollZone.setPosition(paddingX, this.headerHeight + paddingY);
-    this.scrollZone.setSize(Math.max(0, this.currentWidth - paddingX * 2), Math.max(0, bodyHeight));
+  private layout(): void {
+    this.panelWidth = Math.round(PANEL_BASE_WIDTH * this.hudScale);
+    const baseHeight = this.minimized ? MINIMIZED_HEIGHT : PANEL_BASE_HEIGHT;
+    this.panelHeight = Math.round(baseHeight * this.hudScale);
+    this.lineHeight = Math.round(LINE_HEIGHT * this.hudScale);
 
     const radius = HUD_RADIUS * this.hudScale;
     this.background.clear();
     this.background.fillStyle(PANEL_BACKGROUND_COLOR, PANEL_BACKGROUND_ALPHA);
-    this.background.fillRoundedRect(0, 0, this.currentWidth, this.currentHeight, radius);
+    this.background.fillRoundedRect(0, 0, this.panelWidth, this.panelHeight, radius);
+
     this.border.clear();
     this.border.lineStyle(1, PANEL_BORDER_COLOR, PANEL_BORDER_ALPHA);
-    this.border.strokeRoundedRect(0.5, 0.5, this.currentWidth - 1, this.currentHeight - 1, Math.max(0, radius - 1));
+    this.border.strokeRoundedRect(0.5, 0.5, this.panelWidth - 1, this.panelHeight - 1, Math.max(0, radius - 1));
 
-    const handleOffset = this.scaled(18);
-    const handleX = this.currentWidth - handleOffset;
-    const handleY = this.currentHeight - handleOffset;
-    this.resizeHandle.setPosition(handleX, handleY);
-    this.resizeHandle.setScale(this.hudScale);
-    this.resizeHandle.setVisible(!this.minimized);
-    if (this.minimized) {
-      this.body.setVisible(false);
-      this.scrollZone.disableInteractive();
-      this.resizeHandle.disableInteractive();
-    } else {
-      this.body.setVisible(true);
-      if (!this.scrollZone.input?.enabled) {
-        this.scrollZone.setInteractive({ cursor: 'default' });
-      }
-      if (!this.resizeHandle.input?.enabled) {
-        this.resizeHandle.setInteractive({ cursor: 'nwse-resize' });
-      }
-    }
-  }
+    this.title.setFontSize(14 * this.hudScale);
 
-  private updateHeaderLayout(): void {
-    this.hideChipTooltip();
-    const title = this.header.getAt(0) as Phaser.GameObjects.Text;
-    const paddingX = this.scaled(HEADER_HORIZONTAL_PADDING);
-    const paddingY = this.scaled(CHIP_PADDING_Y);
-    title.setFontSize(TITLE_FONT_SIZE * this.hudScale);
-    title.setPosition(paddingX, paddingY);
+    const paddingX = HEADER_PADDING_X * this.hudScale;
+    const paddingY = HEADER_PADDING_Y * this.hudScale;
+    const chipPaddingX = CHIP_PADDING_X * this.hudScale;
+    const chipPaddingY = CHIP_PADDING_Y * this.hudScale;
+    const chipHeight = Math.max(this.title.height, (LINE_HEIGHT + CHIP_PADDING_Y * 2) * this.hudScale * 0.9);
+    const chipGap = CHIP_GAP * this.hudScale;
+    const chipRowGap = CHIP_ROW_GAP * this.hudScale;
+    const actionGap = ACTION_GAP * this.hudScale;
+    const actionPaddingX = ACTION_PADDING_X * this.hudScale;
 
-    const actions = [this.pauseButton, this.clearButton, this.collapseButton];
-    const actionGap = this.scaled(8);
-    const actionSize = ICON_BUTTON_SIZE * this.hudScale;
-    let actionX = this.currentWidth - paddingX - actionSize / 2;
-    const actionY = paddingY + actionSize / 2;
-    for (let i = actions.length - 1; i >= 0; i -= 1) {
-      const button = actions[i];
-      this.drawIconButton(button, false);
-      button.container.setPosition(actionX, actionY);
-      actionX -= actionSize + actionGap;
-    }
+    this.title.setPosition(paddingX, paddingY);
 
-    const availableWidth = this.currentWidth - paddingX * 2 - (actionSize * actions.length + actionGap * (actions.length - 1));
-    const chipStart = Math.max(paddingX, title.x + title.displayWidth + this.scaled(12));
-    let chipX = chipStart;
-    let chipY = paddingY;
-    let rowHeight = 0;
+    const actionButtons: HeaderButton[] = [this.pauseButton, this.clearButton, this.collapseButton];
+    let actionX = this.panelWidth - paddingX;
+    const actionHeight = chipHeight;
+
+    actionButtons.forEach((button) => {
+      const text = button.label;
+      text.setFontSize(12 * this.hudScale);
+      const width = text.width + actionPaddingX * 2;
+      const height = actionHeight;
+      actionX -= width;
+      button.width = width;
+      button.height = height;
+      button.container.setPosition(actionX, paddingY);
+      this.drawChip(button.background, width, height, this.minimized ? 0.55 : 0.7, true);
+      text.setPosition(width / 2, height / 2);
+      button.container.setSize(width, height);
+      actionX -= actionGap;
+    });
+
+    const filtersTop = this.title.y + this.title.height + HEADER_GAP * this.hudScale;
+    let chipX = paddingX;
+    let chipY = filtersTop;
+    let chipsBottom = filtersTop;
+
     FILTER_ORDER.forEach((key) => {
-      const button = this.filterButtons[key];
-      if (!button) return;
-      this.drawFilterButton(button);
-      if (chipX + button.width > paddingX + availableWidth) {
+      const chip = this.filterChips[key];
+      const label = chip.label;
+      label.setFontSize(12 * this.hudScale);
+      label.setText(FILTER_LABELS[key]);
+      const width = label.width + chipPaddingX * 2;
+      const height = chipHeight;
+      if (chipX + width > this.panelWidth - paddingX) {
         chipX = paddingX;
-        chipY += rowHeight + this.scaled(CHIP_ROW_GAP);
-        rowHeight = 0;
+        chipY += height + chipRowGap;
       }
-      button.container.setPosition(chipX + button.width / 2, chipY + button.height / 2);
-      chipX += button.width + this.scaled(FILTER_GAP);
-      rowHeight = Math.max(rowHeight, button.height);
-    });
-    if (rowHeight === 0) {
-      rowHeight = title.height;
-    }
-    const chipsBottom = chipY + rowHeight;
-    const actionsBottom = actionY + actionSize / 2;
-    this.headerHeight = Math.max(chipsBottom, actionsBottom) + paddingY;
-    this.updateFilterStyles();
-    this.updatePauseIcon();
-    this.updateCollapseIcon();
-  }
-
-  private createFilterButton(label: string, key: FilterKey): FilterButton {
-    const container = this.scene.add.container(0, 0);
-    container.setData('hovered', false);
-    container.setData('active', false);
-    const background = this.scene.add.graphics();
-    const text = this.scene.add
-      .text(0, 0, label, {
-        fontFamily: HUD_FONT_FAMILY,
-        fontSize: `${BODY_FONT_SIZE}px`,
-        fontStyle: '500',
-        color: '#9bbce4',
-      })
-      .setOrigin(0.5);
-    text.setData('full-text', label);
-    text.setData('truncated', false);
-    container.add([background, text]);
-    container.setSize(CHIP_HEIGHT, CHIP_HEIGHT);
-    container.setName(`filter-${key}`);
-    container.setInteractive(
-      new Phaser.Geom.Rectangle(-CHIP_HEIGHT / 2, -CHIP_HEIGHT / 2, CHIP_HEIGHT, CHIP_HEIGHT),
-      Phaser.Geom.Rectangle.Contains,
-    );
-    const button: FilterButton = { container, background, label: text, width: CHIP_HEIGHT, height: CHIP_HEIGHT };
-    container.on('pointerover', () => {
-      container.setData('hovered', true);
-      this.drawFilterButton(button);
-      this.showChipTooltip(button);
-    });
-    container.on('pointerout', () => {
-      container.setData('hovered', false);
-      this.drawFilterButton(button);
-      this.hideChipTooltip();
-    });
-    container.on('pointerdown', () => this.hideChipTooltip());
-    return button;
-  }
-
-  private createIconButton(icon: string): IconButton {
-    const container = this.scene.add.container(0, 0);
-    const background = this.scene.add.graphics();
-    const iconText = this.scene.add
-      .text(0, 0, icon, {
-        fontFamily: HUD_FONT_FAMILY,
-        fontSize: `${BODY_FONT_SIZE + 2}px`,
-        fontStyle: '500',
-        color: '#b2cff3',
-      })
-      .setOrigin(0.5);
-    container.add([background, iconText]);
-    container.setSize(ICON_BUTTON_SIZE, ICON_BUTTON_SIZE);
-    container.setInteractive(
-      new Phaser.Geom.Rectangle(-ICON_BUTTON_SIZE / 2, -ICON_BUTTON_SIZE / 2, ICON_BUTTON_SIZE, ICON_BUTTON_SIZE),
-      Phaser.Geom.Rectangle.Contains,
-    );
-    const button: IconButton = { container, background, icon: iconText };
-    container.on('pointerover', () => this.drawIconButton(button, true));
-    container.on('pointerout', () => this.drawIconButton(button, false));
-    this.drawIconButton(button);
-    return button;
-  }
-
-  private updateFilterStyles(): void {
-    FILTER_ORDER.forEach((key) => {
-      const button = this.filterButtons[key];
-      if (!button) return;
+      chip.width = width;
+      chip.height = height;
+      chip.container.setPosition(chipX, chipY);
+      chip.container.setSize(width, height);
+      chip.container.setInteractive(new Phaser.Geom.Rectangle(0, 0, width, height), Phaser.Geom.Rectangle.Contains);
       const active = this.filter === key;
-      button.container.setData('active', active);
-      button.label.setColor(active ? '#e1f1ff' : '#9bbce4');
-      this.drawFilterButton(button);
+      this.drawChip(chip.background, width, height, active ? 0.9 : 0.65, active);
+      label.setPosition(width / 2, height / 2);
+      chipX += width + chipGap;
+      chipsBottom = chipY + height;
     });
+
+    const firstRowBottom = paddingY + actionHeight;
+    const titleBottom = this.title.y + this.title.height;
+    const filtersBottom = FILTER_ORDER.length ? chipsBottom : titleBottom;
+    const headerBottom = Math.max(firstRowBottom, titleBottom, filtersBottom);
+    this.headerHeight = this.minimized ? this.panelHeight : headerBottom + paddingY;
+
+    this.header.setSize(this.panelWidth, this.headerHeight);
+
+    const bodyPaddingX = BODY_PADDING_X * this.hudScale;
+    const bodyPaddingY = BODY_PADDING_Y * this.hudScale;
+    this.bodyWidth = Math.max(0, this.panelWidth - bodyPaddingX * 2);
+    this.bodyHeight = this.minimized
+      ? 0
+      : Math.max(0, this.panelHeight - this.headerHeight - bodyPaddingY * 2);
+
+    this.body.setPosition(bodyPaddingX, this.headerHeight + bodyPaddingY);
+    this.maskRect.setPosition(bodyPaddingX, this.headerHeight + bodyPaddingY);
+    this.maskRect.setSize(this.bodyWidth, this.bodyHeight);
+    this.scrollZone.setPosition(bodyPaddingX, this.headerHeight + bodyPaddingY);
+    this.scrollZone.setSize(this.bodyWidth, this.bodyHeight);
+
+    this.body.setVisible(!this.minimized);
+
+    if (this.minimized || this.bodyHeight <= 0) {
+      this.scrollZone.disableInteractive();
+    } else if (this.visible) {
+      this.scrollZone.setInteractive({ cursor: "default" });
+    }
+
+    this.updateScrollBounds();
+    this.setSize(this.panelWidth, this.panelHeight);
   }
 
-  private updatePauseIcon(): void {
-    this.pauseButton.icon.setText(this.paused ? '▶' : '⏸');
-    this.pauseButton.icon.setColor(this.paused ? '#f4d38a' : '#b2cff3');
+  private drawChip(
+    graphics: Phaser.GameObjects.Graphics,
+    width: number,
+    height: number,
+    alpha: number,
+    active: boolean,
+  ): void {
+    const radius = HUD_RADIUS * this.hudScale * 0.6;
+    graphics.clear();
+    const fill = active ? 0x1a3c5d : 0x102132;
+    graphics.fillStyle(fill, alpha);
+    graphics.fillRoundedRect(0, 0, width, height, radius);
+    graphics.lineStyle(1, PANEL_BORDER_COLOR, PANEL_BORDER_ALPHA);
+    graphics.strokeRoundedRect(0.5, 0.5, width - 1, height - 1, Math.max(0, radius - 1));
   }
 
-  private updateCollapseIcon(): void {
-    this.collapseButton.icon.setText(this.minimized ? '⌃' : '⌄');
+  private updateScrollBounds(): void {
+    const filtered = this.events.filter((event) => matchesFilter(this.filter, event));
+    const capacity = this.bodyHeight > 0 ? Math.max(1, Math.min(MAX_VISIBLE_LINES, Math.floor(this.bodyHeight / this.lineHeight))) : 0;
+    this.maxScrollIndex = capacity > 0 ? Math.max(0, filtered.length - capacity) : 0;
+    this.scrollIndex = Phaser.Math.Clamp(this.scrollIndex, 0, this.maxScrollIndex);
+    if (this.stickToBottom) {
+      this.scrollIndex = 0;
+    }
   }
 
-  private render(): void {
-    if (this.minimized) {
+  private render(forceBottom = false): void {
+    if (this.minimized || this.bodyHeight <= 0) {
       this.lines.forEach((line) => line.setVisible(false));
       return;
     }
-    const total = this.filtered.length;
-    if (!total) {
-      this.lines.forEach((line) => line.setVisible(false));
-      return;
+
+    const filtered = this.events.filter((event) => matchesFilter(this.filter, event));
+    const capacity = Math.max(1, Math.min(MAX_VISIBLE_LINES, Math.floor(this.bodyHeight / this.lineHeight)));
+    this.maxScrollIndex = Math.max(0, filtered.length - capacity);
+
+    if (forceBottom) {
+      this.scrollIndex = 0;
+      this.stickToBottom = true;
+    } else if (this.stickToBottom) {
+      this.scrollIndex = 0;
+    } else {
+      this.scrollIndex = Phaser.Math.Clamp(this.scrollIndex, 0, this.maxScrollIndex);
     }
-    const lineStep = this.lineHeight * this.hudScale;
-    const firstIndex = Math.floor(this.scrollOffset / lineStep);
-    const offsetY = -(this.scrollOffset % lineStep);
-    for (let i = 0; i < this.lines.length; i += 1) {
-      const event = this.filtered[firstIndex + i];
-      const line = this.lines[i];
-      if (!event) {
+
+    const end = filtered.length - this.scrollIndex;
+    const start = Math.max(0, end - capacity);
+    const visible = filtered.slice(start, end);
+
+    const baseY = 0;
+    this.lines.forEach((line, index) => {
+      const entry = visible[index];
+      if (!entry) {
         line.setVisible(false);
-        continue;
+        return;
       }
-      const descriptor = this.describeEvent(event);
-      line.setText(descriptor.text);
-      line.setColor(descriptor.color);
-      line.setY(offsetY + i * lineStep);
       line.setVisible(true);
-    }
-  }
-
-  private drawFilterButton(button: FilterButton): void {
-    if (!button) return;
-    const paddingX = this.scaled(CHIP_PADDING_X);
-    const paddingY = this.scaled(CHIP_PADDING_Y);
-    const hovered = button.container.getData('hovered') === true;
-    const active = button.container.getData('active') === true;
-    const original = (button.label.getData('full-text') as string) ?? button.label.text;
-    button.label.setFontSize(BODY_FONT_SIZE * this.hudScale);
-    button.label.setText(original);
-    const textWidth = button.label.width;
-    const width = Math.max(this.scaled(CHIP_HEIGHT), textWidth + paddingX * 2);
-    const height = this.scaled(CHIP_HEIGHT);
-    button.width = width;
-    button.height = height;
-    button.container.setSize(width, height);
-    button.container.setInteractive(
-      new Phaser.Geom.Rectangle(-width / 2, -height / 2, width, height),
-      Phaser.Geom.Rectangle.Contains,
-    );
-    button.label.setFixedSize(Math.max(0, width - paddingX * 2), height);
-    this.truncateLabel(button.label, width - paddingX * 2);
-    button.background.clear();
-    const fillColor = active ? 0x25496d : hovered ? 0x1b2b40 : 0x162333;
-    const fillAlpha = active ? 0.88 : hovered ? 0.75 : 0.6;
-    const radius = HUD_RADIUS * this.hudScale * 0.6;
-    button.background.fillStyle(fillColor, fillAlpha);
-    button.background.fillRoundedRect(-width / 2, -height / 2, width, height, radius);
-    button.background.lineStyle(1, PANEL_BORDER_COLOR, PANEL_BORDER_ALPHA);
-    button.background.strokeRoundedRect(-width / 2 + 0.5, -height / 2 + 0.5, width - 1, height - 1, Math.max(0, radius - 1));
-    button.label.setPosition(0, 0);
-  }
-
-  private truncateLabel(text: Phaser.GameObjects.Text, maxWidth: number): void {
-    if (maxWidth <= 0) {
-      text.setData('truncated', false);
-      return;
-    }
-    const original = (text.getData('full-text') as string) ?? text.text;
-    text.setText(original);
-    if (text.width <= maxWidth) {
-      text.setData('truncated', false);
-      return;
-    }
-    let truncated = original;
-    while (truncated.length > 1 && text.width > maxWidth) {
-      truncated = truncated.slice(0, -1);
-      text.setText(`${truncated}…`);
-      if (text.width <= maxWidth) {
-        break;
-      }
-    }
-    text.setData('truncated', text.text !== original);
-  }
-
-  private showChipTooltip(button: FilterButton): void {
-    if (!button || !this.chipTooltip) {
-      return;
-    }
-    const truncated = button.label.getData('truncated') === true;
-    if (!truncated) {
-      this.hideChipTooltip();
-      return;
-    }
-    const content = (button.label.getData('full-text') as string) ?? button.label.text;
-    this.chipTooltipLabel.setFontSize(BODY_FONT_SIZE * this.hudScale);
-    this.chipTooltipLabel.setText(content);
-    const paddingX = this.scaled(CHIP_PADDING_X + 2);
-    const paddingY = this.scaled(CHIP_PADDING_Y + 2);
-    const width = this.chipTooltipLabel.width + paddingX * 2;
-    const height = this.chipTooltipLabel.height + paddingY * 2;
-    const radius = HUD_RADIUS * this.hudScale * 0.6;
-    this.chipTooltipBackground.clear();
-    this.chipTooltipBackground.fillStyle(PANEL_BACKGROUND_COLOR, PANEL_BACKGROUND_ALPHA);
-    this.chipTooltipBackground.fillRoundedRect(-width / 2, -height / 2, width, height, radius);
-    this.chipTooltipBackground.lineStyle(1, PANEL_BORDER_COLOR, PANEL_BORDER_ALPHA);
-    this.chipTooltipBackground.strokeRoundedRect(
-      -width / 2 + 0.5,
-      -height / 2 + 0.5,
-      width - 1,
-      height - 1,
-      Math.max(0, radius - 1),
-    );
-    const desiredX = button.container.x;
-    const desiredY = button.container.y - button.height / 2 - this.scaled(12);
-    const minX = width / 2 + this.scaled(BASE_BODY_PADDING_X);
-    const maxX = this.currentWidth - width / 2 - this.scaled(BASE_BODY_PADDING_X);
-    const clampedX = Phaser.Math.Clamp(desiredX, minX, Math.max(minX, maxX));
-    const minY = height / 2 + this.scaled(CHIP_PADDING_Y);
-    const maxY = this.headerHeight - height / 2 - this.scaled(CHIP_PADDING_Y);
-    const clampedY = Phaser.Math.Clamp(desiredY, minY, Math.max(minY, maxY));
-    this.chipTooltip.setPosition(clampedX, clampedY);
-    this.chipTooltip.setVisible(true);
-    this.bringToTop(this.chipTooltip);
-  }
-
-  private hideChipTooltip(): void {
-    if (!this.chipTooltip) {
-      return;
-    }
-    this.chipTooltip.setVisible(false);
-  }
-
-  private drawIconButton(button: IconButton, hovered = false): void {
-    const size = ICON_BUTTON_SIZE * this.hudScale;
-    const radius = HUD_RADIUS * this.hudScale * 0.5;
-    button.background.clear();
-    button.background.fillStyle(hovered ? 0x21324a : 0x162333, hovered ? 0.68 : 0.42);
-    button.background.fillRoundedRect(-size / 2, -size / 2, size, size, radius);
-    button.background.lineStyle(1, PANEL_BORDER_COLOR, PANEL_BORDER_ALPHA);
-    button.background.strokeRoundedRect(-size / 2 + 0.5, -size / 2 + 0.5, size - 1, size - 1, Math.max(0, radius - 1));
-    button.container.setSize(size, size);
-    button.container.setInteractive(
-      new Phaser.Geom.Rectangle(-size / 2, -size / 2, size, size),
-      Phaser.Geom.Rectangle.Contains,
-    );
-    button.icon.setFontSize(BODY_FONT_SIZE * this.hudScale + 2);
-  }
-
-  private describeEvent(event: GameEvent): { text: string; color: string } {
-    const time = event.at.toFixed(1).padStart(6, ' ');
-    switch (event.t) {
-      case 'hit': {
-        const text = `[${time}] HIT ${event.src} → ${event.dst} -${event.amount} (${event.rule})`;
-        return { text, color: '#f4a8a8' };
-      }
-      case 'kill': {
-        const text = `[${time}] KILL ${event.dst} by ${event.src} (${event.rule})`;
-        return { text, color: '#ffbe8c' };
-      }
-      case 'buff': {
-        const duration = event.dur.toFixed(1);
-        const text = `[${time}] STATUS ${event.kind} @ ${event.who} (${duration}s)`;
-        return { text, color: '#8ad5ff' };
-      }
-      case 'spawn': {
-        const text = `[${time}] SPAWN ${event.kind} ×${event.n}`;
-        return { text, color: '#96f7c5' };
-      }
-      case 'system':
-      default: {
-        const text = `[${time}] SYSTEM ${event.msg}`;
-        return { text, color: '#c7d7f2' };
-      }
-    }
+      line.setFontSize(this.lineHeight * 0.92);
+      line.setText(formatEvent(entry));
+      line.setPosition(baseY, index * this.lineHeight);
+    });
   }
 }
-
-export const logSystemEvent = (scene: Phaser.Scene, msg: string, at: number): void => {
-  logEvent({ t: 'system', at, msg });
-};
